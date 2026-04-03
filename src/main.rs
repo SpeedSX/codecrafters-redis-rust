@@ -19,6 +19,7 @@ fn main() {
                 if len > 0 {
                     println!("Received: {}", String::from_utf8_lossy(&buffer[..len]));
                     _stream.write_all(b"+PONG\r\n").unwrap();
+                    _stream.flush().unwrap();
                 }
             }
             Err(e) => {

@@ -13,13 +13,16 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
-                let mut buffer: Vec<u8> = vec![0; BUFFER_LENGTH];
-                let len = _stream.read(&mut buffer[..]).unwrap();
+                loop {
+                    let mut buffer: Vec<u8> = vec![0; BUFFER_LENGTH];
+                    let len = _stream.read(&mut buffer[..]).unwrap();
                 
-                if len > 0 {
                     println!("Received: {}", String::from_utf8_lossy(&buffer[..len]));
-                    _stream.write_all(b"+PONG\r\n").unwrap();
-                    _stream.flush().unwrap();
+                    if len > 0 {
+                        _stream.write_all(b"+PONG\r\n").unwrap();
+                    } else {
+                        break;
+                    }
                 }
             }
             Err(e) => {

@@ -1,32 +1,42 @@
 #![allow(unused_imports)]
-use std::net::TcpListener;
-use std::io::{Write, Read};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-fn main() {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
+#[tokio::main]
+async fn main() {
     println!("Logs from your program will appear here!");
 
-    const BUFFER_LENGTH: usize = 1024;
+    let listener = TcpListener::bind("127.0.0.1:6379").await.unwrap();
 
-    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
-    
-    for stream in listener.incoming() {
-        match stream {
-            Ok(mut _stream) => {
-                loop {
-                    let mut buffer: Vec<u8> = vec![0; BUFFER_LENGTH];
-                    let len = _stream.read(&mut buffer[..]).unwrap();
-                
-                    println!("Received: {}", String::from_utf8_lossy(&buffer[..len]));
-                    if len > 0 {
-                        _stream.write_all(b"+PONG\r\n").unwrap();
-                    } else {
-                        break;
-                    }
+    loop {
+        match listener.accept().await {
+            Ok((stream, addr)) => {
+                println!("Accepted connection from {addr}");
+                tokio::spawn(handle_connection(stream));
+            }
+            Err(e) => {
+                println!("error accepting connection: {e}");
+            }
+        }
+    }
+}
+
+async fn handle_connection(mut stream: TcpStream) {
+    const BUFFER_LENGTH: usize = 1024;
+    let mut buffer = vec![0u8; BUFFER_LENGTH];
+
+    loop {
+        match stream.read(&mut buffer).await {
+            Ok(0) => break, // connection closed
+            Ok(len) => {
+                println!("Received: {}", String::from_utf8_lossy(&buffer[..len]));
+                if stream.write_all(b"+PONG\r\n").await.is_err() {
+                    break;
                 }
             }
             Err(e) => {
-                println!("error: {}", e);
+                println!("read error: {e}");
+                break;
             }
         }
     }

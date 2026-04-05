@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10,14 +9,16 @@ use parser::RedisValue;
 
 mod command;
 use command::RedisCommand;
-use tokio::sync::RwLock;
+
+mod storage;
+use storage::Storage;
 
 #[tokio::main]
 async fn main() {
     println!("Logs from your program will appear here!");
 
     let listener = TcpListener::bind("127.0.0.1:6379").await.unwrap();
-    let storage = Arc::new(RwLock::new(HashMap::new()));
+    let storage = Arc::new(Storage::new());
 
     loop {
         match listener.accept().await {
@@ -32,7 +33,7 @@ async fn main() {
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, storage: Arc<RwLock<HashMap<String, String>>>) {
+async fn handle_connection(mut stream: TcpStream, storage: Arc<Storage>) {
     const BUFFER_LENGTH: usize = 1024;
     let mut buffer = vec![0u8; BUFFER_LENGTH];
 
@@ -78,9 +79,9 @@ fn is_client_disconnect(error: &std::io::Error) -> bool {
 async fn process_input(
     input: &str,
     stream: &mut TcpStream,
-    storage: &Arc<RwLock<HashMap<String, String>>>,
+    storage: &Arc<Storage>,
 ) {
-    if let Ok(cmd) = RedisValue::parse(input).and_then(|value| RedisCommand::try_from(&value)) {
+    if let Ok(cmd) = RedisCommand::parse(input) {
         if let Ok(response) = get_response(&cmd, storage).await {
             check_result(write_response(stream, response).await);
         } else {
@@ -95,21 +96,19 @@ async fn process_input(
 
 async fn get_response(
     cmd: &RedisCommand,
-    storage: &Arc<RwLock<HashMap<String, String>>>,
+    storage: &Arc<Storage>,
 ) -> Result<Cow<'static, str>, std::io::Error> {
     match cmd {
-        RedisCommand::Ping => Ok(Cow::Borrowed("+PONG\r\n")),
+        RedisCommand::Ping => Ok("+PONG\r\n".into()),
         RedisCommand::Echo(args) => Ok(RedisValue::BulkString(args.clone()).to_string().into()),
-        RedisCommand::Set(key, value) => {
-            storage.write().await.insert(key.clone(), value.clone());
-            Ok(Cow::Borrowed("+OK\r\n"))
+        RedisCommand::Set(key, value, expire) => {
+            storage.set(key.clone(), value.clone(), *expire).await;
+            Ok("+OK\r\n".into())
         }
         RedisCommand::Get(key) => {
-            let value = storage.read().await.get(key).cloned();
-            match value {
-                Some(v) => Ok(RedisValue::BulkString(v).to_string().into()),
-                None => Ok(Cow::Borrowed("$-1\r\n")),
-            }
+            Ok(storage.get(key).await
+                .map(|value| Cow::Owned(RedisValue::BulkString(value).to_string()))
+                .unwrap_or(Cow::Borrowed("$-1\r\n")))
         }
     }
 }
@@ -131,7 +130,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_response_echo() {
-        let storage = Arc::new(RwLock::new(HashMap::new()));
+        let storage = Arc::new(Storage::new());
         let cmd = RedisCommand::Echo("Hello".to_string());
         let response = get_response(&cmd, &storage).await.unwrap();
         assert_eq!(response, "$5\r\nHello\r\n");
@@ -139,11 +138,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_response_set_get() {
-        let storage = Arc::new(RwLock::new(HashMap::new()));
-        let set_cmd = RedisCommand::Set("key".to_string(), "value".to_string());
+        let storage = Arc::new(Storage::new());
+        let set_cmd = RedisCommand::Set("key".to_string(), "value".to_string(), None);
         get_response(&set_cmd, &storage).await.unwrap();
         let get_cmd = RedisCommand::Get("key".to_string());
         let response = get_response(&get_cmd, &storage).await.unwrap();
         assert_eq!(response, "$5\r\nvalue\r\n");
+    }
+
+        #[tokio::test]
+    async fn test_get_response_set_expire_get() {
+        let storage = Arc::new(Storage::new());
+        let set_cmd = RedisCommand::Set("key".to_string(), "value".to_string(), Some(1000));
+        get_response(&set_cmd, &storage).await.unwrap();
+        let get_cmd = RedisCommand::Get("key".to_string());
+        let response = get_response(&get_cmd, &storage).await.unwrap();
+        assert_eq!(response, "$5\r\nvalue\r\n");
+    }
+
+    #[tokio::test]
+    async fn test_get_response_get_nonexistent() {
+        let storage = Arc::new(Storage::new());
+        let get_cmd = RedisCommand::Get("nonexistent".to_string());
+        let response = get_response(&get_cmd, &storage).await.unwrap();
+        assert_eq!(response, "$-1\r\n");
     }
 }

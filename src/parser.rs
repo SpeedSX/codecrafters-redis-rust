@@ -88,14 +88,14 @@ mod tests {
     #[test]
     fn test_bulk_string() {
         let input = "$6\r\nfoobar\r\n";
-        let value = RedisValue::try_from(input).unwrap();
+        let value = RedisValue::parse(input).unwrap();
         assert_eq!(value.to_string(), input);
     }
 
     #[test]
     fn test_array() {
         let input = "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n";
-        let value = RedisValue::try_from(input).unwrap();
+        let value = RedisValue::parse(input).unwrap();
         assert_eq!(value.to_string(), input);
     }
 }

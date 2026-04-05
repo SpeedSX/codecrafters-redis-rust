@@ -96,11 +96,14 @@ async fn get_response(
 ) -> Result<Cow<'static, str>, std::io::Error> {
     match cmd {
         RedisCommand::Ping => Ok("+PONG\r\n".into()),
+        
         RedisCommand::Echo(args) => Ok(RedisValue::BulkString(args).to_string().into()),
+        
         RedisCommand::Set(key, value, expire) => {
             storage.set(key, value, expire).await;
             Ok("+OK\r\n".into())
         }
+
         RedisCommand::Get(key) => Ok(storage
             .get(&key)
             .await
@@ -109,7 +112,7 @@ async fn get_response(
 
         RedisCommand::RPush(list_key, element) => {
             let len = storage.add_to_list(list_key, element).await;
-            Ok(format!(":{}\r\n", len).into())
+            Ok(RedisValue::Integer(len as i64).to_string().into())
         }
     }
 }

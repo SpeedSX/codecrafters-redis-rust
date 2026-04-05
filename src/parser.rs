@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 #[derive(Clone)]
 pub enum RedisValue {
     Array(Vec<RedisValue>),
@@ -18,7 +20,9 @@ impl RedisValue {
                 let header_len = 1 + values.len().to_string().len() + 2;
                 header_len + values.iter().map(RedisValue::encoded_len).sum::<usize>()
             }
-            RedisValue::BulkString(value) => 1 + value.len().to_string().len() + 2 + value.len() + 2,
+            RedisValue::BulkString(value) => {
+                1 + value.len().to_string().len() + 2 + value.len() + 2
+            }
         }
     }
 }
@@ -52,19 +56,19 @@ impl TryFrom<&str> for RedisValue {
     }
 }
 
-impl ToString for RedisValue {
-    fn to_string(&self) -> String {
+impl Display for RedisValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RedisValue::Array(values) => {
                 let mut s = format!("*{}\r\n", values.len());
                 for value in values {
                     s.push_str(&value.to_string());
                 }
-                s
-            },
+                write!(f, "{s}")
+            }
             RedisValue::BulkString(value) => {
-                format!("${}\r\n{}\r\n", value.len(), value)
-            },
+                write!(f, "${}\r\n{}\r\n", value.len(), value)
+            }
         }
     }
 }
@@ -77,6 +81,7 @@ impl TryFrom<String> for RedisValue {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -2,13 +2,18 @@ use std::{collections::HashMap, time::Duration};
 
 use tokio::{sync::RwLock, time::Instant};
 
+enum ItemValue {
+    String(String),
+    List(Vec<String>),
+}
+
 struct Item {
-    value: String,
+    value: ItemValue,
     expire_at: Option<Instant>,
 }
 
 pub struct Storage {
-    data:  RwLock<HashMap<String, Item>>
+    data: RwLock<HashMap<String, Item>>,
 }
 
 impl Storage {
@@ -20,7 +25,10 @@ impl Storage {
 
     pub async fn set(&self, key: String, value: String, expire: Option<i32>) {
         let expire_at = expire.map(|ms| Instant::now() + Duration::from_millis(ms as u64));
-        let item = Item { value, expire_at };
+        let item = Item {
+            value: ItemValue::String(value),
+            expire_at,
+        };
         self.data.write().await.insert(key, item);
     }
 
@@ -33,8 +41,28 @@ impl Storage {
                     return None;
                 }
             }
-            return Some(item.value.clone());
+            return match &item.value {
+                ItemValue::String(s) => Some(s.clone()),
+                ItemValue::List(_) => None,
+            };
         }
         None
+    }
+
+    pub async fn add_to_list(&self, list_key: String, element: String) -> i32 {
+        let mut data = self.data.write().await;
+        let item = data.entry(list_key).or_insert_with(|| Item {
+            value: ItemValue::List(Vec::new()),
+            expire_at: None,
+        });
+        if let ItemValue::List(list) = &mut item.value {
+            list.push(element);
+            list.len() as i32
+        } else {
+            // If the key exists but is not a list, we can choose to overwrite it or ignore the command.
+            // Here, we choose to overwrite it with a new list containing the element.
+            item.value = ItemValue::List(vec![element]);
+            1
+        }
     }
 }

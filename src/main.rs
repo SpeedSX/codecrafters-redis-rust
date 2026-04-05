@@ -76,13 +76,9 @@ fn is_client_disconnect(error: &std::io::Error) -> bool {
     )
 }
 
-async fn process_input(
-    input: &str,
-    stream: &mut TcpStream,
-    storage: &Arc<Storage>,
-) {
+async fn process_input(input: &str, stream: &mut TcpStream, storage: &Arc<Storage>) {
     if let Ok(cmd) = RedisCommand::parse(input) {
-        if let Ok(response) = get_response(&cmd, storage).await {
+        if let Ok(response) = get_response(cmd, storage).await {
             check_result(write_response(stream, response).await);
         } else {
             println!("Failed to get response for command");
@@ -95,20 +91,25 @@ async fn process_input(
 }
 
 async fn get_response(
-    cmd: &RedisCommand,
+    cmd: RedisCommand,
     storage: &Arc<Storage>,
 ) -> Result<Cow<'static, str>, std::io::Error> {
     match cmd {
         RedisCommand::Ping => Ok("+PONG\r\n".into()),
-        RedisCommand::Echo(args) => Ok(RedisValue::BulkString(args.clone()).to_string().into()),
+        RedisCommand::Echo(args) => Ok(RedisValue::BulkString(args).to_string().into()),
         RedisCommand::Set(key, value, expire) => {
-            storage.set(key.clone(), value.clone(), *expire).await;
+            storage.set(key, value, expire).await;
             Ok("+OK\r\n".into())
         }
-        RedisCommand::Get(key) => {
-            Ok(storage.get(key).await
-                .map(|value| Cow::Owned(RedisValue::BulkString(value).to_string()))
-                .unwrap_or(Cow::Borrowed("$-1\r\n")))
+        RedisCommand::Get(key) => Ok(storage
+            .get(&key)
+            .await
+            .map(|value| Cow::Owned(RedisValue::BulkString(value).to_string()))
+            .unwrap_or(Cow::Borrowed("$-1\r\n"))),
+
+        RedisCommand::RPush(list_key, element) => {
+            let len = storage.add_to_list(list_key, element).await;
+            Ok(format!(":{}\r\n", len).into())
         }
     }
 }
@@ -132,7 +133,7 @@ mod tests {
     async fn test_get_response_echo() {
         let storage = Arc::new(Storage::new());
         let cmd = RedisCommand::Echo("Hello".to_string());
-        let response = get_response(&cmd, &storage).await.unwrap();
+        let response = get_response(cmd, &storage).await.unwrap();
         assert_eq!(response, "$5\r\nHello\r\n");
     }
 
@@ -140,19 +141,19 @@ mod tests {
     async fn test_get_response_set_get() {
         let storage = Arc::new(Storage::new());
         let set_cmd = RedisCommand::Set("key".to_string(), "value".to_string(), None);
-        get_response(&set_cmd, &storage).await.unwrap();
+        get_response(set_cmd, &storage).await.unwrap();
         let get_cmd = RedisCommand::Get("key".to_string());
-        let response = get_response(&get_cmd, &storage).await.unwrap();
+        let response = get_response(get_cmd, &storage).await.unwrap();
         assert_eq!(response, "$5\r\nvalue\r\n");
     }
 
-        #[tokio::test]
+    #[tokio::test]
     async fn test_get_response_set_expire_get() {
         let storage = Arc::new(Storage::new());
         let set_cmd = RedisCommand::Set("key".to_string(), "value".to_string(), Some(1000));
-        get_response(&set_cmd, &storage).await.unwrap();
+        get_response(set_cmd, &storage).await.unwrap();
         let get_cmd = RedisCommand::Get("key".to_string());
-        let response = get_response(&get_cmd, &storage).await.unwrap();
+        let response = get_response(get_cmd, &storage).await.unwrap();
         assert_eq!(response, "$5\r\nvalue\r\n");
     }
 
@@ -160,7 +161,20 @@ mod tests {
     async fn test_get_response_get_nonexistent() {
         let storage = Arc::new(Storage::new());
         let get_cmd = RedisCommand::Get("nonexistent".to_string());
-        let response = get_response(&get_cmd, &storage).await.unwrap();
+        let response = get_response(get_cmd, &storage).await.unwrap();
         assert_eq!(response, "$-1\r\n");
+    }
+
+    #[tokio::test]
+    async fn test_get_response_rpush() {
+        let storage = Arc::new(Storage::new());
+
+        let rpush_cmd = RedisCommand::RPush("mylist".to_string(), "element1".to_string());
+        let response = get_response(rpush_cmd, &storage).await.unwrap();
+        assert_eq!(response, ":1\r\n");
+
+        let rpush_cmd = RedisCommand::RPush("mylist".to_string(), "element2".to_string());
+        let response = get_response(rpush_cmd, &storage).await.unwrap();
+        assert_eq!(response, ":2\r\n");
     }
 }

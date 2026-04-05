@@ -4,6 +4,7 @@ use std::fmt::Display;
 pub enum RedisValue {
     Array(Vec<RedisValue>),
     BulkString(String),
+    Integer(i64),
 }
 
 impl RedisValue {
@@ -23,6 +24,7 @@ impl RedisValue {
             RedisValue::BulkString(value) => {
                 1 + value.len().to_string().len() + 2 + value.len() + 2
             }
+            RedisValue::Integer(value) => 1 + value.to_string().len() + 2,
         }
     }
 }
@@ -51,6 +53,11 @@ impl TryFrom<&str> for RedisValue {
                 let value = s[next + 2..next + 2 + len].to_string();
                 Ok(RedisValue::BulkString(value))
             }
+            ':' => {
+                let next = s.find('\r').ok_or(())?;
+                let value = s[1..next].parse::<i64>().map_err(|_| ())?;
+                Ok(RedisValue::Integer(value))
+            }
             _ => Err(()),
         }
     }
@@ -68,6 +75,9 @@ impl Display for RedisValue {
             }
             RedisValue::BulkString(value) => {
                 write!(f, "${}\r\n{}\r\n", value.len(), value)
+            }
+            RedisValue::Integer(value) => {
+                write!(f, ":{}\r\n", value)
             }
         }
     }
@@ -95,6 +105,13 @@ mod tests {
     #[test]
     fn test_array() {
         let input = "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n";
+        let value = RedisValue::parse(input).unwrap();
+        assert_eq!(value.to_string(), input);
+    }
+
+    #[test]
+    fn test_integer() {
+        let input = ":123\r\n";
         let value = RedisValue::parse(input).unwrap();
         assert_eq!(value.to_string(), input);
     }

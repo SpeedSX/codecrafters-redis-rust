@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(
             response,
             RedisValue::Array(vec![
-                RedisValue::BulkString("d".into()),
+                RedisValue::BulkString("c".into()),
                 RedisValue::BulkString("a".into())
             ])
         );

@@ -78,7 +78,7 @@ impl Storage {
         });
 
         if let ItemValue::List(list) = &mut item.value {
-            list.splice(0..0, elements);
+            list.splice(0..0, elements.into_iter().rev());
             list.len()
         } else {
             // If the key exists but is not a list, we can choose to overwrite it or ignore the command.

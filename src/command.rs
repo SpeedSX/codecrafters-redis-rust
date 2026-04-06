@@ -9,6 +9,7 @@ pub enum RedisCommand {
     LPush(String, Vec<String>),
     LRange(String, i64, i64),
     LLen(String),
+    LPop(String),
 }
 
 impl RedisCommand {
@@ -127,6 +128,14 @@ impl RedisCommand {
         Ok(RedisCommand::LLen(list_key))
     }
 
+    fn parse_lpop_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let list_key = Self::match_bulk_string(&mut iter)?;
+        Ok(RedisCommand::LPop(list_key))
+    }
+
     fn match_bulk_string<'a, I>(mut iter: I) -> Result<String, ()>
     where
         I: Iterator<Item = &'a RedisValue>,
@@ -177,6 +186,8 @@ impl TryFrom<&RedisValue> for RedisCommand {
                     "LRANGE" => RedisCommand::parse_lrange_command(iter),
 
                     "LLEN" => RedisCommand::parse_llen_command(iter),
+
+                    "LPOP" => RedisCommand::parse_lpop_command(iter),
 
                     _ => Err(()),
                 }

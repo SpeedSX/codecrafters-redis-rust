@@ -302,4 +302,36 @@ mod tests {
         let response = get_response(llen_cmd, &storage).await.unwrap();
         assert_eq!(response, RedisValue::Integer(4));
     }
+
+    #[tokio::test]
+    async fn test_get_response_llen_nonexistent() {
+        let storage = Arc::new(Storage::new());
+        let llen_cmd = RedisCommand::LLen("nonexistent".to_string());
+        let response = get_response(llen_cmd, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::Integer(0));
+    }
+
+    #[tokio::test]
+    async fn test_get_response_lpop() {
+        let storage = Arc::new(Storage::new());
+        let rpush_cmd = RedisCommand::RPush(
+            "mylist".to_string(),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        );
+        get_response(rpush_cmd, &storage).await.unwrap();
+        let lpop_cmd = RedisCommand::LPop("mylist".to_string());
+        let response = get_response(lpop_cmd, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::BulkString("a".to_string()));
+        let llen_cmd = RedisCommand::LLen("mylist".to_string());
+        let response = get_response(llen_cmd, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::Integer(2));
+    }
+
+    #[tokio::test]
+    async fn test_get_response_lpop_empty() {
+        let storage = Arc::new(Storage::new());
+        let lpop_cmd = RedisCommand::LPop("mylistempty".to_string());
+        let response = get_response(lpop_cmd, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::NullBulkString);
+    }
 }

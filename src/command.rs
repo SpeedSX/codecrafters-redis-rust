@@ -6,6 +6,7 @@ pub enum RedisCommand {
     Get(String),
     Set(String, String, Option<u32>),
     RPush(String, Vec<String>),
+    LPush(String, Vec<String>),
     LRange(String, i64, i64),
 }
 
@@ -83,12 +84,56 @@ impl RedisCommand {
         Ok(RedisCommand::RPush(list_key, elements))
     }
 
+    fn parse_lpush_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let list_key = Self::match_bulk_string(&mut iter)?;
+
+        // Should we allow non-bulk string values to be added to the list? For simplicity, we will only allow bulk strings.
+        let elements = iter
+            .filter_map(|value| {
+                if let RedisValue::BulkString(s) = value {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<String>>();
+
+        if elements.is_empty() {
+            return Err(());
+        }
+
+        Ok(RedisCommand::LPush(list_key, elements))
+    }
+
+    fn parse_lrange_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let list_key = Self::match_bulk_string(&mut iter)?;
+        let start_index = Self::match_int_arg(&mut iter)?;
+        let end_index = Self::match_int_arg(&mut iter)?;
+        Ok(RedisCommand::LRange(list_key, start_index, end_index))
+    }
+
     fn match_bulk_string<'a, I>(mut iter: I) -> Result<String, ()>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
         match iter.next() {
             Some(RedisValue::BulkString(s)) => Ok(s.clone()),
+            _ => Err(()),
+        }
+    }
+
+    fn match_int_arg<'a, I>(mut iter: I) -> Result<i64, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        match iter.next() {
+            Some(RedisValue::BulkString(s)) => s.parse::<i64>().map_err(|_| ()),
             _ => Err(()),
         }
     }
@@ -118,12 +163,9 @@ impl TryFrom<&RedisValue> for RedisCommand {
 
                     "RPUSH" => RedisCommand::parse_rpush_command(iter),
 
-                    "LRANGE" => {
-                        let list_key = Self::match_bulk_string(&mut iter)?;
-                        let start_index = Self::match_bulk_string(&mut iter)?.parse::<i64>().map_err(|_| ())?;
-                        let end_index = Self::match_bulk_string(&mut iter)?.parse::<i64>().map_err(|_| ())?;
-                        Ok(RedisCommand::LRange(list_key, start_index, end_index))
-                    }
+                    "LPUSH" => RedisCommand::parse_lpush_command(iter),
+
+                    "LRANGE" => RedisCommand::parse_lrange_command(iter),
 
                     _ => Err(()),
                 }
@@ -250,6 +292,23 @@ mod tests {
                 assert_eq!(element, ["element"]);
             }
             _ => panic!("Expected RPUSH command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_lpush() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("LPUSH".to_string()),
+            RedisValue::BulkString("mylist".to_string()),
+            RedisValue::BulkString("element".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::LPush(list_key, element) => {
+                assert_eq!(list_key, "mylist");
+                assert_eq!(element, ["element"]);
+            }
+            _ => panic!("Expected LPUSH command"),
         }
     }
 

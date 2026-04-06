@@ -50,7 +50,7 @@ impl Storage {
         None
     }
 
-    pub async fn add_to_list(&self, list_key: String, elements: Vec<String>) -> usize {
+    pub async fn append(&self, list_key: String, elements: Vec<String>) -> usize {
         let mut data = self.data.write().await;
 
         let item = data.entry(list_key).or_insert_with(|| Item {
@@ -69,23 +69,55 @@ impl Storage {
         }
     }
 
-    pub async fn get_list_range(&self, list_key: &str, start_index: i64, end_index: i64) -> Option<Vec<String>> {
+    pub async fn prepend(&self, list_key: String, elements: Vec<String>) -> usize {
+        let mut data = self.data.write().await;
+
+        let item = data.entry(list_key).or_insert_with(|| Item {
+            value: ItemValue::List(Vec::new()),
+            expire_at: None,
+        });
+
+        if let ItemValue::List(list) = &mut item.value {
+            list.splice(0..0, elements);
+            list.len()
+        } else {
+            // If the key exists but is not a list, we can choose to overwrite it or ignore the command.
+            // Here, we choose to overwrite it with a new list containing the element.
+            item.value = ItemValue::List(elements);
+            1
+        }
+    }
+
+    pub async fn get_list_range(
+        &self,
+        list_key: &str,
+        start_index: i64,
+        end_index: i64,
+    ) -> Option<Vec<String>> {
         let data = self.data.read().await;
-        if let Some(item) = data.get(list_key) {
-            if let ItemValue::List(list) = &item.value {
-                let len = list.len() as i64;
-                let start = if start_index < 0 { len + start_index } else { start_index };
-                let end = if end_index < 0 { len + end_index } else { end_index };
+        if let Some(item) = data.get(list_key)
+            && let ItemValue::List(list) = &item.value
+        {
+            let len = list.len() as i64;
+            let start = if start_index < 0 {
+                len + start_index
+            } else {
+                start_index
+            };
+            let end = if end_index < 0 {
+                len + end_index
+            } else {
+                end_index
+            };
 
-                if start >= len || end < 0 || start > end {
-                    return Some(vec![]);
-                }
-
-                let start = start.max(0) as usize;
-                let end = (end.min(len - 1)) as usize;
-
-                return Some(list[start..=end].to_vec());
+            if start >= len || end < 0 || start > end {
+                return Some(vec![]);
             }
+
+            let start = start.max(0) as usize;
+            let end = (end.min(len - 1)) as usize;
+
+            return Some(list[start..=end].to_vec());
         }
         Some(vec![])
     }

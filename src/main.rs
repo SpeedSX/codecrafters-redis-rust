@@ -110,6 +110,14 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
                 i64::try_from(storage.add_to_list(list_key, elements).await).map_err(|_| ())?;
             Ok(RedisValue::Integer(len))
         }
+
+        RedisCommand::LRange(list_key, start_index, end_index) => {
+            storage
+                .get_list_range(&list_key, start_index, end_index)
+                .await
+                .map(|vec| RedisValue::Array(vec.into_iter().map(RedisValue::BulkString).collect()))
+                .ok_or(())
+        }
     }
 }
 
@@ -180,5 +188,18 @@ mod tests {
             RedisCommand::RPush("mylist".to_string(), vec!["3".to_string(), "4".to_string()]);
         let response = get_response(rpush_cmd, &storage).await.unwrap();
         assert_eq!(response, RedisValue::Integer(4));
+    }
+
+    #[tokio::test]
+    async fn test_get_response_lrange() {
+        let storage = Arc::new(Storage::new());
+        let rpush_cmd = RedisCommand::RPush(
+            "mylist".to_string(),
+            vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()],
+        );
+        get_response(rpush_cmd, &storage).await.unwrap();
+        let lrange_cmd = RedisCommand::LRange("mylist".to_string(), 1, 2);
+        let response = get_response(lrange_cmd, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::Array(vec![RedisValue::BulkString("b".into()), RedisValue::BulkString("c".into())]));
     }
 }

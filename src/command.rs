@@ -6,6 +6,7 @@ pub enum RedisCommand {
     Get(String),
     Set(String, String, Option<u32>),
     RPush(String, Vec<String>),
+    LRange(String, i64, i64),
 }
 
 impl RedisCommand {
@@ -20,36 +21,22 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let value = match iter.next() {
-            Some(RedisValue::BulkString(s)) => s.clone(),
-            _ => return Err(()),
-        };
-        Ok(RedisCommand::Echo(value))
+        Self::match_bulk_string(&mut iter).map(RedisCommand::Echo)
     }
 
     fn parse_get_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let key = match iter.next() {
-            Some(RedisValue::BulkString(s)) => s.clone(),
-            _ => return Err(()),
-        };
-        Ok(RedisCommand::Get(key))
+        Self::match_bulk_string(&mut iter).map(RedisCommand::Get)
     }
 
     fn parse_set_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let key = match iter.next() {
-            Some(RedisValue::BulkString(s)) => s.clone(),
-            _ => return Err(()),
-        };
-        let value = match iter.next() {
-            Some(RedisValue::BulkString(s)) => s.clone(),
-            _ => return Err(()),
-        };
+        let key = Self::match_bulk_string(&mut iter)?;
+        let value = Self::match_bulk_string(&mut iter)?;
         let expire = if let Some(RedisValue::BulkString(expire_option_str)) = iter.next() {
             let mult = match expire_option_str.to_uppercase().as_str() {
                 "PX" => 1,
@@ -76,10 +63,7 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let list_key = match iter.next() {
-            Some(RedisValue::BulkString(s)) => s.clone(),
-            _ => return Err(()),
-        };
+        let list_key = Self::match_bulk_string(&mut iter)?;
 
         // Should we allow non-bulk string values to be added to the list? For simplicity, we will only allow bulk strings.
         let elements = iter
@@ -97,6 +81,16 @@ impl RedisCommand {
         }
 
         Ok(RedisCommand::RPush(list_key, elements))
+    }
+
+    fn match_bulk_string<'a, I>(mut iter: I) -> Result<String, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        match iter.next() {
+            Some(RedisValue::BulkString(s)) => Ok(s.clone()),
+            _ => Err(()),
+        }
     }
 }
 
@@ -123,6 +117,13 @@ impl TryFrom<&RedisValue> for RedisCommand {
                     "GET" => RedisCommand::parse_get_command(iter),
 
                     "RPUSH" => RedisCommand::parse_rpush_command(iter),
+
+                    "LRANGE" => {
+                        let list_key = Self::match_bulk_string(&mut iter)?;
+                        let start_index = Self::match_bulk_string(&mut iter)?.parse::<i64>().map_err(|_| ())?;
+                        let end_index = Self::match_bulk_string(&mut iter)?.parse::<i64>().map_err(|_| ())?;
+                        Ok(RedisCommand::LRange(list_key, start_index, end_index))
+                    }
 
                     _ => Err(()),
                 }
@@ -249,6 +250,25 @@ mod tests {
                 assert_eq!(element, ["element"]);
             }
             _ => panic!("Expected RPUSH command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_lrange() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("LRANGE".to_string()),
+            RedisValue::BulkString("mylist".to_string()),
+            RedisValue::BulkString("0".to_string()),
+            RedisValue::BulkString("-1".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::LRange(list_key, start_index, end_index) => {
+                assert_eq!(list_key, "mylist");
+                assert_eq!(start_index, 0);
+                assert_eq!(end_index, -1);
+            }
+            _ => panic!("Expected LRANGE command"),
         }
     }
 

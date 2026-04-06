@@ -68,4 +68,25 @@ impl Storage {
             1
         }
     }
+
+    pub async fn get_list_range(&self, list_key: &str, start_index: i64, end_index: i64) -> Option<Vec<String>> {
+        let data = self.data.read().await;
+        if let Some(item) = data.get(list_key) {
+            if let ItemValue::List(list) = &item.value {
+                let len = list.len() as i64;
+                let start = if start_index < 0 { len + start_index } else { start_index };
+                let end = if end_index < 0 { len + end_index } else { end_index };
+
+                if start >= len || end < 0 || start > end {
+                    return Some(vec![]);
+                }
+
+                let start = start.max(0) as usize;
+                let end = (end.min(len - 1)) as usize;
+
+                return Some(list[start..=end].to_vec());
+            }
+        }
+        Some(vec![])
+    }
 }

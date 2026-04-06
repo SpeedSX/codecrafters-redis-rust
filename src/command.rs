@@ -4,8 +4,8 @@ pub enum RedisCommand {
     Echo(String),
     Ping,
     Get(String),
-    Set(String, String, Option<i32>),
-    RPush(String, String),
+    Set(String, String, Option<u32>),
+    RPush(String, Vec<String>),
 }
 
 impl RedisCommand {
@@ -14,6 +14,89 @@ impl RedisCommand {
         T: AsRef<str>,
     {
         RedisValue::parse(input).and_then(|value| Self::try_from(&value))
+    }
+
+    fn parse_echo_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let value = match iter.next() {
+            Some(RedisValue::BulkString(s)) => s.clone(),
+            _ => return Err(()),
+        };
+        Ok(RedisCommand::Echo(value))
+    }
+
+    fn parse_get_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let key = match iter.next() {
+            Some(RedisValue::BulkString(s)) => s.clone(),
+            _ => return Err(()),
+        };
+        Ok(RedisCommand::Get(key))
+    }
+
+    fn parse_set_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let key = match iter.next() {
+            Some(RedisValue::BulkString(s)) => s.clone(),
+            _ => return Err(()),
+        };
+        let value = match iter.next() {
+            Some(RedisValue::BulkString(s)) => s.clone(),
+            _ => return Err(()),
+        };
+        let expire = if let Some(RedisValue::BulkString(expire_option_str)) = iter.next() {
+            let mult = match expire_option_str.to_uppercase().as_str() {
+                "PX" => 1,
+                "EX" => 1000,
+                _ => return Err(()),
+            };
+            if let Some(RedisValue::BulkString(expire_value_str)) = iter.next() {
+                let expire_value = expire_value_str.parse::<u32>().map_err(|_| ())?;
+                if expire_value == 0 {
+                    return Err(());
+                }
+                Some(expire_value * mult)
+            } else {
+                return Err(());
+            }
+        } else {
+            None
+        };
+
+        Ok(RedisCommand::Set(key, value, expire))
+    }
+
+    fn parse_rpush_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let list_key = match iter.next() {
+            Some(RedisValue::BulkString(s)) => s.clone(),
+            _ => return Err(()),
+        };
+
+        // Should we allow non-bulk string values to be added to the list? For simplicity, we will only allow bulk strings.
+        let elements = iter
+            .filter_map(|value| {
+                if let RedisValue::BulkString(s) = value {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<String>>();
+
+        if elements.is_empty() {
+            return Err(());
+        }
+
+        Ok(RedisCommand::RPush(list_key, elements))
     }
 }
 
@@ -33,74 +116,21 @@ impl TryFrom<&RedisValue> for RedisCommand {
                 match cmd_name.as_str() {
                     "PING" => Ok(RedisCommand::Ping),
 
-                    "ECHO" => {
-                        let value = match iter.next() {
-                            Some(RedisValue::BulkString(s)) => s.clone(),
-                            _ => return Err(()),
-                        };
-                        Ok(RedisCommand::Echo(value))
-                    }
+                    "ECHO" => RedisCommand::parse_echo_command(iter),
 
-                    "SET" => {
-                        let key = match iter.next() {
-                            Some(RedisValue::BulkString(s)) => s.clone(),
-                            _ => return Err(()),
-                        };
-                        let value = match iter.next() {
-                            Some(RedisValue::BulkString(s)) => s.clone(),
-                            _ => return Err(()),
-                        };
-                        let expire = if let Some(RedisValue::BulkString(expire_option_str)) =
-                            iter.next()
-                        {
-                            let mult = match expire_option_str.to_uppercase().as_str() {
-                                "PX" => 1,
-                                "EX" => 1000,
-                                _ => return Err(()),
-                            };
-                            if let Some(RedisValue::BulkString(expire_value_str)) = iter.next() {
-                                let expire_value =
-                                    expire_value_str.parse::<i32>().map_err(|_| ())?;
-                                if expire_value <= 0 {
-                                    return Err(());
-                                }
-                                Some(expire_value * mult)
-                            } else {
-                                return Err(());
-                            }
-                        } else {
-                            None
-                        };
+                    "SET" => RedisCommand::parse_set_command(iter),
 
-                        Ok(RedisCommand::Set(key, value, expire))
-                    }
+                    "GET" => RedisCommand::parse_get_command(iter),
 
-                    "GET" => {
-                        let key = match iter.next() {
-                            Some(RedisValue::BulkString(s)) => s.clone(),
-                            _ => return Err(()),
-                        };
-                        Ok(RedisCommand::Get(key))
-                    }
-
-                    "RPUSH" => {
-                        let list_key = match iter.next() {
-                            Some(RedisValue::BulkString(s)) => s.clone(),
-                            _ => return Err(()),
-                        };
-
-                        let element = match iter.next() {
-                            Some(RedisValue::BulkString(s)) => s.clone(),
-                            _ => return Err(()),
-                        };
-
-                        Ok(RedisCommand::RPush(list_key, element))
-                    }
+                    "RPUSH" => RedisCommand::parse_rpush_command(iter),
 
                     _ => Err(()),
                 }
             }
-            RedisValue::BulkString(_) | RedisValue::Integer(_) => Err(()),
+            RedisValue::BulkString(_)
+            | RedisValue::Integer(_)
+            | RedisValue::SimpleString(_)
+            | RedisValue::NullBulkString => Err(()),
         }
     }
 }
@@ -216,7 +246,7 @@ mod tests {
         match cmd {
             RedisCommand::RPush(list_key, element) => {
                 assert_eq!(list_key, "mylist");
-                assert_eq!(element, "element");
+                assert_eq!(element, ["element"]);
             }
             _ => panic!("Expected RPUSH command"),
         }

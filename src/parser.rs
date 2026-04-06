@@ -1,9 +1,11 @@
-use std::fmt::Display;
+use std::{borrow::Cow, fmt::Display};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum RedisValue {
     Array(Vec<RedisValue>),
+    SimpleString(Cow<'static, str>),
     BulkString(String),
+    NullBulkString,
     Integer(i64),
 }
 
@@ -15,16 +17,46 @@ impl RedisValue {
         Self::try_from(input.as_ref())
     }
 
-    fn encoded_len(&self) -> usize {
-        match self {
-            RedisValue::Array(values) => {
-                let header_len = 1 + values.len().to_string().len() + 2;
-                header_len + values.iter().map(RedisValue::encoded_len).sum::<usize>()
+    fn parse_with_rest(s: &str) -> Result<(Self, &str), ()> {
+        match s.chars().next().ok_or(())? {
+            '*' => {
+                let next = s.find("\r\n").ok_or(())?;
+                let len = s[1..next].parse::<usize>().map_err(|_| ())?;
+                let mut rest = &s[next + 2..];
+                let values = (0..len)
+                    .map(|_| {
+                        let (value, new_rest) = RedisValue::parse_with_rest(rest)?;
+                        rest = new_rest;
+                        Ok(value)
+                    })
+                    .collect::<Result<Vec<_>, ()>>()?;
+                Ok((RedisValue::Array(values), rest))
             }
-            RedisValue::BulkString(value) => {
-                1 + value.len().to_string().len() + 2 + value.len() + 2
+            '$' => {
+                let next = s.find("\r\n").ok_or(())?;
+                let len_str = &s[1..next];
+                let after_header = &s[next + 2..];
+                if len_str == "-1" {
+                    return Ok((RedisValue::NullBulkString, after_header));
+                }
+
+                let len = len_str.parse::<usize>().map_err(|_| ())?;
+                let value = after_header.get(..len).ok_or(())?;
+                let after_value = after_header.get(len..).ok_or(())?;
+                let rest = after_value.strip_prefix("\r\n").ok_or(())?;
+                Ok((RedisValue::BulkString(value.to_string()), rest))
             }
-            RedisValue::Integer(value) => 1 + value.to_string().len() + 2,
+            ':' => {
+                let next = s.find("\r\n").ok_or(())?;
+                let value = s[1..next].parse::<i64>().map_err(|_| ())?;
+                Ok((RedisValue::Integer(value), &s[next + 2..]))
+            }
+            '+' => {
+                let next = s.find("\r\n").ok_or(())?;
+                let value = s[1..next].to_string();
+                Ok((RedisValue::SimpleString(value.into()), &s[next + 2..]))
+            }
+            _ => Err(()),
         }
     }
 }
@@ -33,33 +65,7 @@ impl TryFrom<&str> for RedisValue {
     type Error = ();
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        match s.chars().next().ok_or(())? {
-            '*' => {
-                let next = s.find('\r').ok_or(())?;
-                let len = s[1..next].parse::<usize>().map_err(|_| ())?;
-                let mut values = Vec::with_capacity(len);
-                let mut rest = &s[next + 2..];
-                for _ in 0..len {
-                    let value = RedisValue::try_from(rest)?;
-                    let consumed = value.encoded_len();
-                    values.push(value);
-                    rest = &rest[consumed..];
-                }
-                Ok(RedisValue::Array(values))
-            }
-            '$' => {
-                let next = s.find('\r').ok_or(())?;
-                let len = s[1..next].parse::<usize>().map_err(|_| ())?;
-                let value = s[next + 2..next + 2 + len].to_string();
-                Ok(RedisValue::BulkString(value))
-            }
-            ':' => {
-                let next = s.find('\r').ok_or(())?;
-                let value = s[1..next].parse::<i64>().map_err(|_| ())?;
-                Ok(RedisValue::Integer(value))
-            }
-            _ => Err(()),
-        }
+        RedisValue::parse_with_rest(s).map(|(value, _)| value)
     }
 }
 
@@ -77,7 +83,13 @@ impl Display for RedisValue {
                 write!(f, "${}\r\n{}\r\n", value.len(), value)
             }
             RedisValue::Integer(value) => {
-                write!(f, ":{}\r\n", value)
+                write!(f, ":{value}\r\n")
+            }
+            RedisValue::SimpleString(value) => {
+                write!(f, "+{value}\r\n")
+            }
+            RedisValue::NullBulkString => {
+                write!(f, "$-1\r\n")
             }
         }
     }
@@ -94,6 +106,20 @@ impl TryFrom<String> for RedisValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_simple_string() {
+        let input = "+OK\r\n";
+        let value = RedisValue::parse(input).unwrap();
+        assert_eq!(value.to_string(), input);
+    }
+
+    #[test]
+    fn test_null_bulk_string() {
+        let input = "$-1\r\n";
+        let value = RedisValue::parse(input).unwrap();
+        assert_eq!(value.to_string(), input);
+    }
 
     #[test]
     fn test_bulk_string() {

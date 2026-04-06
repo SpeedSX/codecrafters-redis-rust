@@ -126,6 +126,11 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
             .await
             .map(|len| RedisValue::Integer(len as i64))
             .ok_or(()),
+
+        RedisCommand::LPop(list_key) => Ok(storage
+            .pop_list_front(&list_key)
+            .await
+            .map_or(RedisValue::NullBulkString, RedisValue::BulkString)),
     }
 }
 
@@ -321,10 +326,10 @@ mod tests {
         get_response(rpush_cmd, &storage).await.unwrap();
         let lpop_cmd = RedisCommand::LPop("mylist".to_string());
         let response = get_response(lpop_cmd, &storage).await.unwrap();
-        assert_eq!(response, RedisValue::BulkString("a".to_string()));
+        assert_eq!(response, RedisValue::BulkString("a".to_string()), "Expected to pop the first element 'a' from the list");
         let llen_cmd = RedisCommand::LLen("mylist".to_string());
         let response = get_response(llen_cmd, &storage).await.unwrap();
-        assert_eq!(response, RedisValue::Integer(2));
+        assert_eq!(response, RedisValue::Integer(2), "Expected the list length to be 2 after popping one element");
     }
 
     #[tokio::test]

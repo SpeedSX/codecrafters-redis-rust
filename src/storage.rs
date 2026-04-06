@@ -1,10 +1,10 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::{HashMap, VecDeque}, time::Duration};
 
 use tokio::{sync::RwLock, time::Instant};
 
 enum ItemValue {
     String(String),
-    List(Vec<String>),
+    List(VecDeque<String>),
 }
 
 struct Item {
@@ -54,7 +54,7 @@ impl Storage {
         let mut data = self.data.write().await;
 
         let item = data.entry(list_key).or_insert_with(|| Item {
-            value: ItemValue::List(Vec::new()),
+            value: ItemValue::List(VecDeque::new()),
             expire_at: None,
         });
 
@@ -64,7 +64,7 @@ impl Storage {
         } else {
             // If the key exists but is not a list, we can choose to overwrite it or ignore the command.
             // Here, we choose to overwrite it with a new list containing the element.
-            item.value = ItemValue::List(elements);
+            item.value = ItemValue::List(VecDeque::from(elements));
             1
         }
     }
@@ -73,17 +73,19 @@ impl Storage {
         let mut data = self.data.write().await;
 
         let item = data.entry(list_key).or_insert_with(|| Item {
-            value: ItemValue::List(Vec::new()),
+            value: ItemValue::List(VecDeque::new()),
             expire_at: None,
         });
 
         if let ItemValue::List(list) = &mut item.value {
-            list.splice(0..0, elements.into_iter().rev());
+            for element in elements {
+                list.push_front(element);
+            }
             list.len()
         } else {
             // If the key exists but is not a list, we can choose to overwrite it or ignore the command.
             // Here, we choose to overwrite it with a new list containing the element.
-            item.value = ItemValue::List(elements);
+            item.value = ItemValue::List(VecDeque::from(elements));
             1
         }
     }
@@ -117,7 +119,7 @@ impl Storage {
             let start = start.max(0) as usize;
             let end = (end.min(len - 1)) as usize;
 
-            return Some(list[start..=end].to_vec());
+            return Some(list.range(start..=end).cloned().collect());
         }
         Some(vec![])
     }
@@ -130,5 +132,19 @@ impl Storage {
             return Some(list.len());
         }
         Some(0)
+    }
+
+    pub async fn pop_list_front(&self, list_key: &str) -> Option<String> {
+        let mut data = self.data.write().await;
+        if let Some(item) = data.get_mut(list_key)
+            && let ItemValue::List(list) = &mut item.value
+        {
+            return list.pop_front().or_else(|| {
+                // If the list is empty after popping, we can choose to remove the key from storage.
+                data.remove(list_key);
+                None
+            });
+        }
+        None
     }
 }

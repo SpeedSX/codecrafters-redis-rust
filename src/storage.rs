@@ -121,4 +121,14 @@ impl Storage {
         }
         Some(vec![])
     }
+
+    pub async fn get_list_len(&self, list_key: &str) -> Option<usize> {
+        let data = self.data.read().await;
+        if let Some(item) = data.get(list_key)
+            && let ItemValue::List(list) = &item.value
+        {
+            return Some(list.len());
+        }
+        Some(0)
+    }
 }

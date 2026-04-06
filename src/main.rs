@@ -80,7 +80,7 @@ async fn process_input(input: &str, stream: &mut TcpStream, storage: &Arc<Storag
         if let Ok(response) = get_response(cmd, storage).await {
             check_result(write_response(stream, response.to_string()).await);
         } else {
-            println!("Failed to write response for command");
+            println!("Failed to process command");
             check_result(write_error_response(stream).await);
         }
     } else {
@@ -119,6 +119,12 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
             .get_list_range(&list_key, start_index, end_index)
             .await
             .map(|vec| RedisValue::Array(vec.into_iter().map(RedisValue::BulkString).collect()))
+            .ok_or(()),
+
+        RedisCommand::LLen(list_key) => storage
+            .get_list_len(&list_key)
+            .await
+            .map(|len| RedisValue::Integer(len as i64))
             .ok_or(()),
     }
 }
@@ -277,5 +283,23 @@ mod tests {
                 RedisValue::BulkString("d".into())
             ])
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_response_llen() {
+        let storage = Arc::new(Storage::new());
+        let rpush_cmd = RedisCommand::RPush(
+            "mylist".to_string(),
+            vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+            ],
+        );
+        get_response(rpush_cmd, &storage).await.unwrap();
+        let llen_cmd = RedisCommand::LLen("mylist".to_string());
+        let response = get_response(llen_cmd, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::Integer(4));
     }
 }

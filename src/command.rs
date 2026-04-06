@@ -8,6 +8,7 @@ pub enum RedisCommand {
     RPush(String, Vec<String>),
     LPush(String, Vec<String>),
     LRange(String, i64, i64),
+    LLen(String),
 }
 
 impl RedisCommand {
@@ -118,6 +119,14 @@ impl RedisCommand {
         Ok(RedisCommand::LRange(list_key, start_index, end_index))
     }
 
+    fn parse_llen_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let list_key = Self::match_bulk_string(&mut iter)?;
+        Ok(RedisCommand::LLen(list_key))
+    }
+
     fn match_bulk_string<'a, I>(mut iter: I) -> Result<String, ()>
     where
         I: Iterator<Item = &'a RedisValue>,
@@ -166,6 +175,8 @@ impl TryFrom<&RedisValue> for RedisCommand {
                     "LPUSH" => RedisCommand::parse_lpush_command(iter),
 
                     "LRANGE" => RedisCommand::parse_lrange_command(iter),
+
+                    "LLEN" => RedisCommand::parse_llen_command(iter),
 
                     _ => Err(()),
                 }
@@ -328,6 +339,21 @@ mod tests {
                 assert_eq!(end_index, -1);
             }
             _ => panic!("Expected LRANGE command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_llen() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("LLEN".to_string()),
+            RedisValue::BulkString("mylist".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::LLen(list_key) => {
+                assert_eq!(list_key, "mylist");
+            }
+            _ => panic!("Expected LLEN command"),
         }
     }
 

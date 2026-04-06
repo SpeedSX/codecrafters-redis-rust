@@ -20,9 +20,8 @@ impl RedisValue {
     fn parse_with_rest(s: &str) -> Result<(Self, &str), ()> {
         match s.chars().next().ok_or(())? {
             '*' => {
-                let next = s.find("\r\n").ok_or(())?;
-                let len = s[1..next].parse::<usize>().map_err(|_| ())?;
-                let mut rest = &s[next + 2..];
+                let (len_str, mut rest) = Self::read_next_value_str(s)?;
+                let len = len_str.parse::<usize>().map_err(|_| ())?;
                 let values = (0..len)
                     .map(|_| {
                         let (value, new_rest) = RedisValue::parse_with_rest(rest)?;
@@ -33,9 +32,7 @@ impl RedisValue {
                 Ok((RedisValue::Array(values), rest))
             }
             '$' => {
-                let next = s.find("\r\n").ok_or(())?;
-                let len_str = &s[1..next];
-                let after_header = &s[next + 2..];
+                let (len_str, after_header) = Self::read_next_value_str(s)?;
                 if len_str == "-1" {
                     return Ok((RedisValue::NullBulkString, after_header));
                 }
@@ -47,17 +44,23 @@ impl RedisValue {
                 Ok((RedisValue::BulkString(value.to_string()), rest))
             }
             ':' => {
-                let next = s.find("\r\n").ok_or(())?;
-                let value = s[1..next].parse::<i64>().map_err(|_| ())?;
-                Ok((RedisValue::Integer(value), &s[next + 2..]))
+                let (value_str, rest) = Self::read_next_value_str(s)?;
+                let value = value_str.parse::<i64>().map_err(|_| ())?;
+                Ok((RedisValue::Integer(value), rest))
             }
             '+' => {
-                let next = s.find("\r\n").ok_or(())?;
-                let value = s[1..next].to_string();
-                Ok((RedisValue::SimpleString(value.into()), &s[next + 2..]))
+                let (value_str, rest) = Self::read_next_value_str(s)?;
+                Ok((RedisValue::SimpleString(value_str.to_string().into()), rest))
             }
             _ => Err(()),
         }
+    }
+
+    fn read_next_value_str(s: &str) -> Result<(&str, &str), ()> {
+        let next = s.find("\r\n").ok_or(())?;
+        let value = &s[1..next];
+        let rest = &s[next + 2..];
+        Ok((value, rest))
     }
 }
 
@@ -108,35 +111,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_simple_string() {
+    fn parse_simple_string() {
         let input = "+OK\r\n";
         let value = RedisValue::parse(input).unwrap();
         assert_eq!(value.to_string(), input);
     }
 
     #[test]
-    fn test_null_bulk_string() {
+    fn parse_null_bulk_string() {
         let input = "$-1\r\n";
         let value = RedisValue::parse(input).unwrap();
         assert_eq!(value.to_string(), input);
     }
 
     #[test]
-    fn test_bulk_string() {
+    fn parse_bulk_string() {
         let input = "$6\r\nfoobar\r\n";
         let value = RedisValue::parse(input).unwrap();
         assert_eq!(value.to_string(), input);
     }
 
     #[test]
-    fn test_array() {
+    fn parse_empty_bulk_string() {
+        let input = "$0\r\n\r\n";
+        let value = RedisValue::parse(input).unwrap();
+        assert_eq!(value.to_string(), input);
+    }
+
+    #[test]
+    fn parse_array() {
         let input = "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n";
         let value = RedisValue::parse(input).unwrap();
         assert_eq!(value.to_string(), input);
     }
 
     #[test]
-    fn test_integer() {
+    fn parse_integer() {
         let input = ":123\r\n";
         let value = RedisValue::parse(input).unwrap();
         assert_eq!(value.to_string(), input);

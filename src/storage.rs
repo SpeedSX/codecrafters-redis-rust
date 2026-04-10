@@ -17,12 +17,14 @@ struct Item {
 
 pub struct Storage {
     data: RwLock<HashMap<String, Item>>,
+    list_notify: tokio::sync::Notify,
 }
 
 impl Storage {
     pub fn new() -> Self {
         Storage {
             data: RwLock::new(HashMap::new()),
+            list_notify: tokio::sync::Notify::new(),
         }
     }
 
@@ -63,11 +65,13 @@ impl Storage {
 
         if let ItemValue::List(list) = &mut item.value {
             list.extend(elements);
+            self.list_notify.notify_waiters();
             list.len()
         } else {
             // If the key exists but is not a list, we can choose to overwrite it or ignore the command.
             // Here, we choose to overwrite it with a new list containing the element.
             item.value = ItemValue::List(VecDeque::from(elements));
+            self.list_notify.notify_waiters();
             1
         }
     }
@@ -84,11 +88,13 @@ impl Storage {
             for element in elements {
                 list.push_front(element);
             }
+            self.list_notify.notify_waiters();
             list.len()
         } else {
             // If the key exists but is not a list, we can choose to overwrite it or ignore the command.
             // Here, we choose to overwrite it with a new list containing the element.
             item.value = ItemValue::List(VecDeque::from(elements));
+            self.list_notify.notify_waiters();
             1
         }
     }
@@ -174,7 +180,7 @@ impl Storage {
 
                 drop(data);
                 // Keep waiting when the list is empty or missing; BLPOP should unblock on push or timeout.
-                tokio::task::yield_now().await;
+                self.list_notify.notified().await;
             }
         };
 

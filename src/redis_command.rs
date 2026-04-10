@@ -233,7 +233,8 @@ impl TryFrom<&RedisValue> for RedisCommand {
             RedisValue::BulkString(_)
             | RedisValue::Integer(_)
             | RedisValue::SimpleString(_)
-            | RedisValue::NullBulkString => Err(()),
+            | RedisValue::NullBulkString
+            | RedisValue::NullArray => Err(()),
         }
     }
 }

@@ -132,7 +132,7 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
                 Ok(storage
                     .pop_list_front_n(&list_key, count)
                     .await
-                    .map_or(RedisValue::NullBulkString, |vec| {
+                    .map_or(RedisValue::NullArray, |vec| {
                         RedisValue::Array(vec.into_iter().map(RedisValue::BulkString).collect())
                     }))
             } else {
@@ -143,20 +143,15 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
             }
         }
 
-        RedisCommand::BLPop(list_key, timeout) =>
-        // TODO: block until element is found or timeout is reached.
-        // Return NullBulkString if timeout is reached.
-        {
-            Ok(storage
-                .pop_list_front_with_timeout(&list_key, timeout)
-                .await
-                .map_or(RedisValue::NullBulkString, |value| {
-                    RedisValue::Array(vec![
-                        RedisValue::BulkString(list_key),
-                        RedisValue::BulkString(value),
-                    ])
-                }))
-        }
+        RedisCommand::BLPop(list_key, timeout) => Ok(storage
+            .pop_list_front_with_timeout(&list_key, timeout)
+            .await
+            .map_or(RedisValue::NullArray, |value| {
+                RedisValue::Array(vec![
+                    RedisValue::BulkString(list_key),
+                    RedisValue::BulkString(value),
+                ])
+            })),
     }
 }
 
@@ -408,8 +403,8 @@ mod tests {
         let response = get_response(blpop_cmd, &storage).await.unwrap();
         assert_eq!(
             response,
-            RedisValue::NullBulkString,
-            "Expected BLPop to return NullBulkString when the list is empty and timeout is reached"
+            RedisValue::NullArray,
+            "Expected BLPop to return NullArray when the list is empty and timeout is reached"
         );
     }
 
@@ -467,12 +462,12 @@ mod tests {
                 let rpush_cmd = RedisCommand::RPush("mylist".to_string(), vec!["a".to_string()]);
                 get_response(rpush_cmd, &storage).await.unwrap();
             }
-        });        
+        });
 
         let (waiting_result, _) = tokio::join!(waiting, pushing);
-        
+
         let response = waiting_result.unwrap();
-        
+
         assert_eq!(
             response,
             RedisValue::Array(vec![

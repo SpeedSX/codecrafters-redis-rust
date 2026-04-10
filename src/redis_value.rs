@@ -6,6 +6,7 @@ pub enum RedisValue {
     SimpleString(Cow<'static, str>),
     BulkString(String),
     NullBulkString,
+    NullArray,
     Integer(i64),
 }
 
@@ -92,6 +93,9 @@ impl Display for RedisValue {
             }
             RedisValue::NullBulkString => {
                 write!(f, "$-1\r\n")
+            }
+            RedisValue::NullArray => {
+                write!(f, "*-1\r\n")
             }
         }
     }

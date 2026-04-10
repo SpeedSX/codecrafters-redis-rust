@@ -169,21 +169,19 @@ impl Storage {
                         }
 
                         return Some(value);
-                    } else {
-                        drop(data); // Drop the lock before waiting for an element to be added to the list.
-                        // If the list is empty or the key does not exist, we need to wait until an element is added to the list or the timeout is reached.
-                        tokio::task::yield_now().await; // Yield to allow other tasks to run while waiting for an element to be added to the list.
                     }
-                } else {
-                    return None; // If the key does not exist, we can return None immediately.
                 }
+
+                drop(data);
+                // Keep waiting when the list is empty or missing; BLPOP should unblock on push or timeout.
+                tokio::task::yield_now().await;
             }
         };
 
         if timeout <= 0 {
             return future.await;
         }
-        
+
         tokio::time::timeout(std::time::Duration::from_millis(timeout as u64), future)
             .await
             .ok()

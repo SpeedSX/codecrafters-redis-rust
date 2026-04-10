@@ -145,7 +145,7 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
 
         RedisCommand::BLPop(list_key, timeout) =>
         // TODO: block until element is found or timeout is reached.
-        // Return NullBulkString if the list is timeout is reached.
+        // Return NullBulkString if timeout is reached.
         {
             Ok(storage
                 .pop_list_front_with_timeout(&list_key, timeout)
@@ -437,6 +437,42 @@ mod tests {
         get_response(rpush_cmd, &storage).await.unwrap();
         let blpop_cmd = RedisCommand::BLPop("mylist".to_string(), 0);
         let response = get_response(blpop_cmd, &storage).await.unwrap();
+        assert_eq!(
+            response,
+            RedisValue::Array(vec![
+                RedisValue::BulkString("mylist".to_string()),
+                RedisValue::BulkString("a".to_string())
+            ]),
+            "Expected BLPop to return the popped element 'a' along with the list key when the list is not empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_response_blpop_wait_for_element() {
+        let storage = Arc::new(Storage::new());
+
+        let waiting = tokio::spawn({
+            let storage = storage.clone();
+            async move {
+                let blpop_cmd = RedisCommand::BLPop("mylist".to_string(), 0);
+                get_response(blpop_cmd, &storage).await.unwrap()
+            }
+        });
+
+        let pushing = tokio::spawn({
+            let storage = storage.clone();
+            async move {
+                // Wait for a short moment to ensure the BLPop command is waiting for an element to be added to the list.
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                let rpush_cmd = RedisCommand::RPush("mylist".to_string(), vec!["a".to_string()]);
+                get_response(rpush_cmd, &storage).await.unwrap();
+            }
+        });        
+
+        let (waiting_result, _) = tokio::join!(waiting, pushing);
+        
+        let response = waiting_result.unwrap();
+        
         assert_eq!(
             response,
             RedisValue::Array(vec![

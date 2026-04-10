@@ -56,11 +56,10 @@ impl RedisValue {
         }
     }
 
+    // Reads the next value string (up to the next "\r\n") and returns it along with the remaining string.
     fn read_next_value_str(s: &str) -> Result<(&str, &str), ()> {
         let next = s.find("\r\n").ok_or(())?;
-        let value = &s[1..next];
-        let rest = &s[next + 2..];
-        Ok((value, rest))
+        Ok((&s[1..next], &s[next + 2..]))
     }
 }
 

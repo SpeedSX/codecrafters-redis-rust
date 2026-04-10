@@ -127,10 +127,21 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
             .map(|len| RedisValue::Integer(len as i64))
             .ok_or(()),
 
-        RedisCommand::LPop(list_key) => Ok(storage
-            .pop_list_front(&list_key)
-            .await
-            .map_or(RedisValue::NullBulkString, RedisValue::BulkString)),
+        RedisCommand::LPop(list_key, count) => {
+            if let Some(count) = count {
+                Ok(storage
+                    .pop_list_front_n(&list_key, count)
+                    .await
+                    .map_or(RedisValue::NullBulkString, |vec| {
+                        RedisValue::Array(vec.into_iter().map(RedisValue::BulkString).collect())
+                    }))
+            } else {
+                Ok(storage
+                    .pop_list_front(&list_key)
+                    .await
+                    .map_or(RedisValue::NullBulkString, RedisValue::BulkString))
+            }
+        }
     }
 }
 
@@ -324,19 +335,54 @@ mod tests {
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
         );
         get_response(rpush_cmd, &storage).await.unwrap();
-        let lpop_cmd = RedisCommand::LPop("mylist".to_string());
+        let lpop_cmd = RedisCommand::LPop("mylist".to_string(), None);
         let response = get_response(lpop_cmd, &storage).await.unwrap();
-        assert_eq!(response, RedisValue::BulkString("a".to_string()), "Expected to pop the first element 'a' from the list");
+        assert_eq!(
+            response,
+            RedisValue::BulkString("a".to_string()),
+            "Expected to pop the first element 'a' from the list"
+        );
         let llen_cmd = RedisCommand::LLen("mylist".to_string());
         let response = get_response(llen_cmd, &storage).await.unwrap();
-        assert_eq!(response, RedisValue::Integer(2), "Expected the list length to be 2 after popping one element");
+        assert_eq!(
+            response,
+            RedisValue::Integer(2),
+            "Expected the list length to be 2 after popping one element"
+        );
     }
 
     #[tokio::test]
     async fn test_get_response_lpop_empty() {
         let storage = Arc::new(Storage::new());
-        let lpop_cmd = RedisCommand::LPop("mylistempty".to_string());
+        let lpop_cmd = RedisCommand::LPop("mylistempty".to_string(), None);
         let response = get_response(lpop_cmd, &storage).await.unwrap();
         assert_eq!(response, RedisValue::NullBulkString);
+    }
+
+    #[tokio::test]
+    async fn test_get_response_lpop_n() {
+        let storage = Arc::new(Storage::new());
+        let rpush_cmd = RedisCommand::RPush(
+            "mylist".to_string(),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        );
+        get_response(rpush_cmd, &storage).await.unwrap();
+        let lpop_cmd = RedisCommand::LPop("mylist".to_string(), Some(2));
+        let response = get_response(lpop_cmd, &storage).await.unwrap();
+        assert_eq!(
+            response,
+            RedisValue::Array(vec![
+                RedisValue::BulkString("a".to_string()),
+                RedisValue::BulkString("b".to_string())
+            ]),
+            "Expected to pop the first two elements 'a' and 'b' from the list"
+        );
+        let llen_cmd = RedisCommand::LLen("mylist".to_string());
+        let response = get_response(llen_cmd, &storage).await.unwrap();
+        assert_eq!(
+            response,
+            RedisValue::Integer(1),
+            "Expected the list length to be 1 after popping two elements"
+        );
     }
 }

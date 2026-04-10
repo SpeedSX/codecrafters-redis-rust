@@ -4,12 +4,12 @@ pub enum RedisCommand {
     Echo(String),
     Ping,
     Get(String),
-    Set(String, String, Option<u32>),
+    Set(String, String, Option<i64>),
     RPush(String, Vec<String>),
     LPush(String, Vec<String>),
     LRange(String, i64, i64),
     LLen(String),
-    LPop(String),
+    LPop(String, Option<i64>),
 }
 
 impl RedisCommand {
@@ -24,33 +24,30 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        Self::match_bulk_string(&mut iter).map(RedisCommand::Echo)
+        Self::require_bulk_string(&mut iter).map(RedisCommand::Echo)
     }
 
     fn parse_get_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        Self::match_bulk_string(&mut iter).map(RedisCommand::Get)
+        Self::require_bulk_string(&mut iter).map(RedisCommand::Get)
     }
 
     fn parse_set_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let key = Self::match_bulk_string(&mut iter)?;
-        let value = Self::match_bulk_string(&mut iter)?;
+        let key = Self::require_bulk_string(&mut iter)?;
+        let value = Self::require_bulk_string(&mut iter)?;
         let expire = if let Some(RedisValue::BulkString(expire_option_str)) = iter.next() {
             let mult = match expire_option_str.to_uppercase().as_str() {
                 "PX" => 1,
                 "EX" => 1000,
                 _ => return Err(()),
             };
-            if let Some(RedisValue::BulkString(expire_value_str)) = iter.next() {
-                let expire_value = expire_value_str.parse::<u32>().map_err(|_| ())?;
-                if expire_value == 0 {
-                    return Err(());
-                }
+            let expire_value = Self::require_int_arg(&mut iter)?;
+            if expire_value > 0 {
                 Some(expire_value * mult)
             } else {
                 return Err(());
@@ -66,7 +63,7 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let list_key = Self::match_bulk_string(&mut iter)?;
+        let list_key = Self::require_bulk_string(&mut iter)?;
 
         // Should we allow non-bulk string values to be added to the list? For simplicity, we will only allow bulk strings.
         let elements = iter
@@ -90,7 +87,7 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let list_key = Self::match_bulk_string(&mut iter)?;
+        let list_key = Self::require_bulk_string(&mut iter)?;
 
         // Should we allow non-bulk string values to be added to the list? For simplicity, we will only allow bulk strings.
         let elements = iter
@@ -114,9 +111,9 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let list_key = Self::match_bulk_string(&mut iter)?;
-        let start_index = Self::match_int_arg(&mut iter)?;
-        let end_index = Self::match_int_arg(&mut iter)?;
+        let list_key = Self::require_bulk_string(&mut iter)?;
+        let start_index = Self::require_int_arg(&mut iter)?;
+        let end_index = Self::require_int_arg(&mut iter)?;
         Ok(RedisCommand::LRange(list_key, start_index, end_index))
     }
 
@@ -124,7 +121,7 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let list_key = Self::match_bulk_string(&mut iter)?;
+        let list_key = Self::require_bulk_string(&mut iter)?;
         Ok(RedisCommand::LLen(list_key))
     }
 
@@ -132,11 +129,12 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let list_key = Self::match_bulk_string(&mut iter)?;
-        Ok(RedisCommand::LPop(list_key))
+        let list_key = Self::require_bulk_string(&mut iter)?;
+        let count = Self::match_int_arg(&mut iter)?;
+        Ok(RedisCommand::LPop(list_key, count))
     }
 
-    fn match_bulk_string<'a, I>(mut iter: I) -> Result<String, ()>
+    fn require_bulk_string<'a, I>(mut iter: I) -> Result<String, ()>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
@@ -146,13 +144,23 @@ impl RedisCommand {
         }
     }
 
-    fn match_int_arg<'a, I>(mut iter: I) -> Result<i64, ()>
+    fn require_int_arg<'a, I>(mut iter: I) -> Result<i64, ()>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
         match iter.next() {
             Some(RedisValue::BulkString(s)) => s.parse::<i64>().map_err(|_| ()),
             _ => Err(()),
+        }
+    }
+
+    fn match_int_arg<'a, I>(mut iter: I) -> Result<Option<i64>, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        match iter.next() {
+            Some(RedisValue::BulkString(s)) => s.parse::<i64>().map(Some).map_err(|_| ()),
+            _ => Ok(None),
         }
     }
 }
@@ -369,21 +377,53 @@ mod tests {
     }
 
     #[test]
+    fn test_try_from_lpop() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("LPOP".to_string()),
+            RedisValue::BulkString("mylist".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::LPop(list_key, None) => {
+                assert_eq!(list_key, "mylist");
+            }
+            _ => panic!("Expected LPOP command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_lpop_n() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("LPOP".to_string()),
+            RedisValue::BulkString("mylist".to_string()),
+            RedisValue::BulkString("2".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::LPop(list_key, Some(n)) => {
+                assert_eq!(list_key, "mylist");
+                assert_eq!(n, 2);
+            }
+            _ => panic!("Expected LPOP 2 command"),
+        }
+    }
+
+    #[test]
     fn test_try_from_invalid() {
         let value = RedisValue::BulkString("PING".to_string());
-        assert!(RedisCommand::try_from(&value).is_err());
+        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for non-array value");
 
         let value = RedisValue::Array(vec![]);
-        assert!(RedisCommand::try_from(&value).is_err());
+        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for empty array");
 
         let value = RedisValue::Array(vec![RedisValue::BulkString("UNKNOWN".to_string())]);
-        assert!(RedisCommand::try_from(&value).is_err());
+        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for unknown command");
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("SET".to_string()),
             RedisValue::BulkString("mykey".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err());
+        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for incomplete SET command");
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("SET".to_string()),
@@ -391,7 +431,7 @@ mod tests {
             RedisValue::BulkString("myvalue".to_string()),
             RedisValue::BulkString("EX".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err());
+        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for incomplete SET command with EX option");
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("SET".to_string()),
@@ -400,7 +440,7 @@ mod tests {
             RedisValue::BulkString("EX".to_string()),
             RedisValue::BulkString("-10".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err());
+        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for negative expiration time");
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("SET".to_string()),
@@ -409,13 +449,13 @@ mod tests {
             RedisValue::BulkString("EX".to_string()),
             RedisValue::BulkString("not_a_number".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err());
+        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for non-numeric expiration time");
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("RPUSH".to_string()),
             RedisValue::BulkString("mylist".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err());
+        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for incomplete RPUSH command");
     }
 
     #[test]

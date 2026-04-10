@@ -1,4 +1,7 @@
-use std::{collections::{HashMap, VecDeque}, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    time::Duration,
+};
 
 use tokio::{sync::RwLock, time::Instant};
 
@@ -23,8 +26,8 @@ impl Storage {
         }
     }
 
-    pub async fn set(&self, key: String, value: String, expire: Option<u32>) {
-        let expire_at = expire.map(|ms| Instant::now() + Duration::from_millis(ms.into()));
+    pub async fn set(&self, key: String, value: String, expire: Option<i64>) {
+        let expire_at = expire.map(|ms| Instant::now() + Duration::from_millis(ms as u64));
         let item = Item {
             value: ItemValue::String(value),
             expire_at,
@@ -144,6 +147,29 @@ impl Storage {
                 data.remove(list_key);
                 None
             });
+        }
+        None
+    }
+
+    pub async fn pop_list_front_n(&self, list_key: &str, count: i64) -> Option<Vec<String>> {
+        let mut data = self.data.write().await;
+        if let Some(item) = data.get_mut(list_key)
+            && let ItemValue::List(list) = &mut item.value
+        {
+            let mut result = Vec::new();
+            for _ in 0..count {
+                if let Some(value) = list.pop_front() {
+                    result.push(value);
+                } else {
+                    break;
+                }
+            }
+
+            if list.is_empty() {
+                data.remove(list_key);
+            }
+
+            return Some(result);
         }
         None
     }

@@ -147,9 +147,9 @@ impl RedisCommand {
         I: Iterator<Item = &'a RedisValue>,
     {
         let list_key = Self::require_bulk_string(&mut iter)?;
-        let timeout = Self::require_int_arg(&mut iter)?;
+        let timeout = Self::require_float_arg(&mut iter)?;
 
-        Ok(RedisCommand::BLPop(list_key, timeout))
+        Ok(RedisCommand::BLPop(list_key, (timeout * 1000.0) as i64))
     }
 
     fn require_bulk_string<'a, I>(mut iter: I) -> Result<String, ()>
@@ -168,6 +168,16 @@ impl RedisCommand {
     {
         match iter.next() {
             Some(RedisValue::BulkString(s)) => s.parse::<i64>().map_err(|_| ()),
+            _ => Err(()),
+        }
+    }
+
+    fn require_float_arg<'a, I>(mut iter: I) -> Result<f64, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        match iter.next() {
+            Some(RedisValue::BulkString(s)) => s.parse::<f64>().map_err(|_| ()),
             _ => Err(()),
         }
     }
@@ -425,6 +435,23 @@ mod tests {
                 assert_eq!(n, 2);
             }
             _ => panic!("Expected LPOP 2 command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_blpop() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("BLPOP".to_string()),
+            RedisValue::BulkString("mylist".to_string()),
+            RedisValue::BulkString("0.5".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::BLPop(list_key, timeout) => {
+                assert_eq!(list_key, "mylist");
+                assert_eq!(timeout, 500);
+            }
+            _ => panic!("Expected BLPOP command"),
         }
     }
 

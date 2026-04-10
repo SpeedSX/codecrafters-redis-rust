@@ -70,9 +70,10 @@ impl Storage {
         } else {
             // If the key exists but is not a list, we can choose to overwrite it or ignore the command.
             // Here, we choose to overwrite it with a new list containing the element.
+            let len = elements.len();
             item.value = ItemValue::List(VecDeque::from(elements));
             self.list_notify.notify_waiters();
-            1
+            len
         }
     }
 
@@ -93,9 +94,10 @@ impl Storage {
         } else {
             // If the key exists but is not a list, we can choose to overwrite it or ignore the command.
             // Here, we choose to overwrite it with a new list containing the element.
+            let len = elements.len();
             item.value = ItemValue::List(VecDeque::from(elements));
             self.list_notify.notify_waiters();
-            1
+            len
         }
     }
 

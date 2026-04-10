@@ -422,4 +422,21 @@ mod tests {
             "Expected BLPop to return the popped element 'a' along with the list key when the list is not empty"
         ); 
     }
+
+    #[tokio::test]
+    async fn test_get_response_blpop_with_element_zero_timeout() {
+        let storage = Arc::new(Storage::new());
+        let rpush_cmd = RedisCommand::RPush("mylist".to_string(), vec!["a".to_string()]);
+        get_response(rpush_cmd, &storage).await.unwrap();
+        let blpop_cmd = RedisCommand::BLPop("mylist".to_string(), 0);
+        let response = get_response(blpop_cmd, &storage).await.unwrap();
+        assert_eq!(
+            response,
+            RedisValue::Array(vec![
+                RedisValue::BulkString("mylist".to_string()),
+                RedisValue::BulkString("a".to_string())
+            ]),
+            "Expected BLPop to return the popped element 'a' along with the list key when the list is not empty"
+        ); 
+    }
 }

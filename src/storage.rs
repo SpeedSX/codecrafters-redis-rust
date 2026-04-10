@@ -151,8 +151,12 @@ impl Storage {
         None
     }
 
-    pub async fn pop_list_front_with_timeout(&self, list_key: &str, timeout: i64) -> Option<String> {
-        tokio::time::timeout(std::time::Duration::from_millis(timeout as u64), async {
+    pub async fn pop_list_front_with_timeout(
+        &self,
+        list_key: &str,
+        timeout: i64,
+    ) -> Option<String> {
+        let future = async {
             loop {
                 let mut data = self.data.write().await;
                 if let Some(item) = data.get_mut(list_key)
@@ -166,6 +170,7 @@ impl Storage {
 
                         return Some(value);
                     } else {
+                        drop(data); // Drop the lock before waiting for an element to be added to the list.
                         // If the list is empty or the key does not exist, we need to wait until an element is added to the list or the timeout is reached.
                         tokio::task::yield_now().await; // Yield to allow other tasks to run while waiting for an element to be added to the list.
                     }
@@ -173,10 +178,16 @@ impl Storage {
                     return None; // If the key does not exist, we can return None immediately.
                 }
             }
-        })
-        .await
-        .ok()
-        .flatten()
+        };
+
+        if timeout <= 0 {
+            return future.await;
+        }
+        
+        tokio::time::timeout(std::time::Duration::from_millis(timeout as u64), future)
+            .await
+            .ok()
+            .flatten()
     }
 
     pub async fn pop_list_front_n(&self, list_key: &str, count: i64) -> Option<Vec<String>> {

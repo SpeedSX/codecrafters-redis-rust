@@ -144,12 +144,19 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
         }
 
         RedisCommand::BLPop(list_key, timeout) =>
-            // TODO: block until element is found or timeout is reached.
-            // Return NullBulkString if the list is timeout is reached.
+        // TODO: block until element is found or timeout is reached.
+        // Return NullBulkString if the list is timeout is reached.
+        {
             Ok(storage
                 .pop_list_front_with_timeout(&list_key, timeout)
                 .await
-                .map_or(RedisValue::NullBulkString, |value| RedisValue::Array(vec![RedisValue::BulkString(list_key), RedisValue::BulkString(value)])))
+                .map_or(RedisValue::NullBulkString, |value| {
+                    RedisValue::Array(vec![
+                        RedisValue::BulkString(list_key),
+                        RedisValue::BulkString(value),
+                    ])
+                }))
+        }
     }
 }
 
@@ -420,7 +427,7 @@ mod tests {
                 RedisValue::BulkString("a".to_string())
             ]),
             "Expected BLPop to return the popped element 'a' along with the list key when the list is not empty"
-        ); 
+        );
     }
 
     #[tokio::test]
@@ -437,6 +444,6 @@ mod tests {
                 RedisValue::BulkString("a".to_string())
             ]),
             "Expected BLPop to return the popped element 'a' along with the list key when the list is not empty"
-        ); 
+        );
     }
 }

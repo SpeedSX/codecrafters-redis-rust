@@ -133,7 +133,9 @@ impl RedisCommand {
         let list_key = Self::require_bulk_string(&mut iter)?;
         let count = Self::match_int_arg(&mut iter)?;
 
-        if let Some (count) = count && count <= 0 {
+        if let Some(count) = count
+            && count <= 0
+        {
             return Err(());
         }
 
@@ -429,19 +431,31 @@ mod tests {
     #[test]
     fn test_try_from_invalid() {
         let value = RedisValue::BulkString("PING".to_string());
-        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for non-array value");
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for non-array value"
+        );
 
         let value = RedisValue::Array(vec![]);
-        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for empty array");
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for empty array"
+        );
 
         let value = RedisValue::Array(vec![RedisValue::BulkString("UNKNOWN".to_string())]);
-        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for unknown command");
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for unknown command"
+        );
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("SET".to_string()),
             RedisValue::BulkString("mykey".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for incomplete SET command");
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for incomplete SET command"
+        );
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("SET".to_string()),
@@ -449,7 +463,10 @@ mod tests {
             RedisValue::BulkString("myvalue".to_string()),
             RedisValue::BulkString("EX".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for incomplete SET command with EX option");
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for incomplete SET command with EX option"
+        );
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("SET".to_string()),
@@ -458,7 +475,10 @@ mod tests {
             RedisValue::BulkString("EX".to_string()),
             RedisValue::BulkString("-10".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for negative expiration time");
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for negative expiration time"
+        );
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("SET".to_string()),
@@ -467,33 +487,48 @@ mod tests {
             RedisValue::BulkString("EX".to_string()),
             RedisValue::BulkString("not_a_number".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for non-numeric expiration time");
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for non-numeric expiration time"
+        );
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("RPUSH".to_string()),
             RedisValue::BulkString("mylist".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for incomplete RPUSH command");
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for incomplete RPUSH command"
+        );
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("LPUSH".to_string()),
             RedisValue::BulkString("mylist".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for incomplete LPUSH command");
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for incomplete LPUSH command"
+        );
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("LPOP".to_string()),
             RedisValue::BulkString("mylist".to_string()),
             RedisValue::BulkString("-2".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for negative LPOP count");
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for negative LPOP count"
+        );
 
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("LPOP".to_string()),
             RedisValue::BulkString("mylist".to_string()),
             RedisValue::BulkString("0".to_string()),
         ]);
-        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for zero LPOP count");
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for zero LPOP count"
+        );
     }
 
     #[test]

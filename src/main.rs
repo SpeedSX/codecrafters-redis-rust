@@ -3,11 +3,11 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-mod parser;
-use parser::RedisValue;
+mod redis_value;
+use redis_value::RedisValue;
 
-mod command;
-use command::RedisCommand;
+mod redis_command;
+use redis_command::RedisCommand;
 
 mod storage;
 use storage::Storage;
@@ -142,6 +142,14 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
                     .map_or(RedisValue::NullBulkString, RedisValue::BulkString))
             }
         }
+
+        RedisCommand::BLPop(list_key, timeout) =>
+            // TODO: block until element is found or timeout is reached.
+            // Return NullBulkString if the list is timeout is reached.
+            Ok(storage
+                .pop_list_front_with_timeout(&list_key, timeout)
+                .await
+                .map_or(RedisValue::NullBulkString, |value| RedisValue::Array(vec![RedisValue::BulkString(list_key), RedisValue::BulkString(value)])))
     }
 }
 
@@ -384,5 +392,34 @@ mod tests {
             RedisValue::Integer(1),
             "Expected the list length to be 1 after popping two elements"
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_response_blpop_timeout() {
+        let storage = Arc::new(Storage::new());
+        let blpop_cmd = RedisCommand::BLPop("mylist".to_string(), 100);
+        let response = get_response(blpop_cmd, &storage).await.unwrap();
+        assert_eq!(
+            response,
+            RedisValue::NullBulkString,
+            "Expected BLPop to return NullBulkString when the list is empty and timeout is reached"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_response_blpop_with_element() {
+        let storage = Arc::new(Storage::new());
+        let rpush_cmd = RedisCommand::RPush("mylist".to_string(), vec!["a".to_string()]);
+        get_response(rpush_cmd, &storage).await.unwrap();
+        let blpop_cmd = RedisCommand::BLPop("mylist".to_string(), 100);
+        let response = get_response(blpop_cmd, &storage).await.unwrap();
+        assert_eq!(
+            response,
+            RedisValue::Array(vec![
+                RedisValue::BulkString("mylist".to_string()),
+                RedisValue::BulkString("a".to_string())
+            ]),
+            "Expected BLPop to return the popped element 'a' along with the list key when the list is not empty"
+        ); 
     }
 }

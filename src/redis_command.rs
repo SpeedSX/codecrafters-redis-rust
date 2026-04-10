@@ -1,4 +1,4 @@
-use crate::parser::RedisValue;
+use crate::redis_value::RedisValue;
 
 pub enum RedisCommand {
     Echo(String),
@@ -10,6 +10,7 @@ pub enum RedisCommand {
     LRange(String, i64, i64),
     LLen(String),
     LPop(String, Option<i64>),
+    BLPop(String, i64),
 }
 
 impl RedisCommand {
@@ -131,7 +132,22 @@ impl RedisCommand {
     {
         let list_key = Self::require_bulk_string(&mut iter)?;
         let count = Self::match_int_arg(&mut iter)?;
+
+        if let Some (count) = count && count <= 0 {
+            return Err(());
+        }
+
         Ok(RedisCommand::LPop(list_key, count))
+    }
+
+    fn parse_blpop_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let list_key = Self::require_bulk_string(&mut iter)?;
+        let timeout = Self::require_int_arg(&mut iter)?;
+
+        Ok(RedisCommand::BLPop(list_key, timeout))
     }
 
     fn require_bulk_string<'a, I>(mut iter: I) -> Result<String, ()>
@@ -196,6 +212,8 @@ impl TryFrom<&RedisValue> for RedisCommand {
                     "LLEN" => RedisCommand::parse_llen_command(iter),
 
                     "LPOP" => RedisCommand::parse_lpop_command(iter),
+
+                    "BLPOP" => RedisCommand::parse_blpop_command(iter),
 
                     _ => Err(()),
                 }
@@ -456,6 +474,26 @@ mod tests {
             RedisValue::BulkString("mylist".to_string()),
         ]);
         assert!(RedisCommand::try_from(&value).is_err(), "Expected error for incomplete RPUSH command");
+
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("LPUSH".to_string()),
+            RedisValue::BulkString("mylist".to_string()),
+        ]);
+        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for incomplete LPUSH command");
+
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("LPOP".to_string()),
+            RedisValue::BulkString("mylist".to_string()),
+            RedisValue::BulkString("-2".to_string()),
+        ]);
+        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for negative LPOP count");
+
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("LPOP".to_string()),
+            RedisValue::BulkString("mylist".to_string()),
+            RedisValue::BulkString("0".to_string()),
+        ]);
+        assert!(RedisCommand::try_from(&value).is_err(), "Expected error for zero LPOP count");
     }
 
     #[test]

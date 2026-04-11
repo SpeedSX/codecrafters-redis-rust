@@ -156,6 +156,13 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
         RedisCommand::Type(key) => Ok(RedisValue::SimpleString(
             storage.get_type(&key).await.into(),
         )),
+
+        RedisCommand::XAdd(key, id, kv_array) => Ok(RedisValue::BulkString(
+            storage
+                .add_to_stream(&key, &id, kv_array)
+                .await
+                .unwrap_or_else(|| "0".to_string()),
+        )),
     }
 }
 
@@ -538,5 +545,20 @@ mod tests {
         let type_cmd = RedisCommand::Type("key".to_string());
         let response = get_response(type_cmd, &storage).await.unwrap();
         assert_eq!(response, RedisValue::SimpleString("string".into()));
+    }
+
+    #[tokio::test]
+    async fn test_get_response_xadd() {
+        let storage = Arc::new(Storage::new());
+        let xadd_cmd = RedisCommand::XAdd(
+            "mystream".to_string(),
+            "1-0".to_string(),
+            vec![
+                ("field1".to_string(), "value1".to_string()),
+                ("field2".to_string(), "value2".to_string()),
+            ],
+        );
+        let response = get_response(xadd_cmd, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::BulkString("1-0".to_string()));
     }
 }

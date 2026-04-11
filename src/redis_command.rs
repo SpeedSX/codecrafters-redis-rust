@@ -12,6 +12,7 @@ pub enum RedisCommand {
     LPop(String, Option<i64>),
     BLPop(String, i64),
     Type(String),
+    XAdd(String, String, Vec<(String, String)>),
 }
 
 impl RedisCommand {
@@ -161,6 +162,25 @@ impl RedisCommand {
         Ok(RedisCommand::Type(key))
     }
 
+    fn parse_xadd_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let key = Self::require_bulk_string(&mut iter)?;
+        let id = Self::require_bulk_string(&mut iter)?;
+        let field = Self::require_bulk_string(&mut iter)?;
+        let value = Self::require_bulk_string(&mut iter)?;
+
+        let mut kv_array = vec![(field, value)];
+
+        while let Some(RedisValue::BulkString(field)) = iter.next() {
+            let value = Self::require_bulk_string(&mut iter)?;
+            kv_array.push((field.clone(), value));
+        }
+
+        Ok(RedisCommand::XAdd(key, id, kv_array))
+    }
+
     fn require_bulk_string<'a, I>(mut iter: I) -> Result<String, ()>
     where
         I: Iterator<Item = &'a RedisValue>,
@@ -237,6 +257,8 @@ impl TryFrom<&RedisValue> for RedisCommand {
                     "BLPOP" => RedisCommand::parse_blpop_command(iter),
 
                     "TYPE" => RedisCommand::parse_type_command(iter),
+
+                    "XADD" => RedisCommand::parse_xadd_command(iter),
 
                     _ => Err(()),
                 }
@@ -479,6 +501,34 @@ mod tests {
                 assert_eq!(key, "mykey");
             }
             _ => panic!("Expected TYPE command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_xadd() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("XADD".to_string()),
+            RedisValue::BulkString("mystream".to_string()),
+            RedisValue::BulkString("12345".to_string()),
+            RedisValue::BulkString("field1".to_string()),
+            RedisValue::BulkString("value1".to_string()),
+            RedisValue::BulkString("field2".to_string()),
+            RedisValue::BulkString("value2".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::XAdd(key, id, kv_array) => {
+                assert_eq!(key, "mystream");
+                assert_eq!(id, "12345");
+                assert_eq!(
+                    kv_array,
+                    vec![
+                        ("field1".to_string(), "value1".to_string()),
+                        ("field2".to_string(), "value2".to_string())
+                    ]
+                );
+            }
+            _ => panic!("Expected XADD command"),
         }
     }
 

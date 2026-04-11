@@ -12,6 +12,10 @@ use tokio::{
 enum ItemValue {
     String(String),
     List(VecDeque<String>),
+    Set(HashMap<String, ()>),
+    ZSet(HashMap<String, f64>),
+    Stream(VecDeque<(String, Vec<(String, String)>)>),
+    VectorSet(Vec<(f64, String)>),
 }
 
 struct Item {
@@ -59,9 +63,14 @@ impl Storage {
                 return None;
             }
 
+            // TODO: we can return different types of values based on the actual type of the item, but for now we only support string values.
             return match &item.value {
                 ItemValue::String(s) => Some(s.clone()),
                 ItemValue::List(_) => None,
+                ItemValue::Set(_) => None,
+                ItemValue::ZSet(_) => None,
+                ItemValue::Stream(_) => None,
+                ItemValue::VectorSet(_) => None,
             };
         }
         None
@@ -232,8 +241,36 @@ impl Storage {
             return match &item.value {
                 ItemValue::String(_) => "string",
                 ItemValue::List(_) => "list",
+                ItemValue::Set(_) => "set",
+                ItemValue::ZSet(_) => "zset",
+                ItemValue::Stream(_) => "stream",
+                ItemValue::VectorSet(_) => "vector_set",
             };
         }
         "none"
+    }
+
+    pub async fn add_to_stream(
+        &self,
+        key: &str,
+        id: &str,
+        kv_array: Vec<(String, String)>,
+    ) -> Option<String> {
+        let mut data = self.data.write().await;
+
+        let item = data.entry(key.to_string()).or_insert_with(|| Item {
+            value: ItemValue::Stream(VecDeque::new()),
+            expire_at: None,
+        });
+
+        if let ItemValue::Stream(stream) = &mut item.value {
+            stream.push_back((id.to_string(), kv_array));
+            Some(id.to_string())
+        } else {
+            // If the key exists but is not a stream, we can choose to overwrite it or ignore the command.
+            // Here, we choose to overwrite it with a new stream containing the element.
+            item.value = ItemValue::Stream(VecDeque::from(vec![(id.to_string(), kv_array)]));
+            Some(id.to_string())
+        }
     }
 }

@@ -1,9 +1,13 @@
 use std::{
     collections::{HashMap, VecDeque},
+    sync::Arc,
     time::Duration,
 };
 
-use tokio::{sync::RwLock, time::Instant};
+use tokio::{
+    sync::{Mutex, Notify, RwLock},
+    time::Instant,
+};
 
 enum ItemValue {
     String(String),
@@ -17,15 +21,23 @@ struct Item {
 
 pub struct Storage {
     data: RwLock<HashMap<String, Item>>,
-    list_notify: tokio::sync::Notify,
+    list_append_notify: Mutex<HashMap<String, Arc<Notify>>>,
 }
 
 impl Storage {
     pub fn new() -> Self {
         Storage {
             data: RwLock::new(HashMap::new()),
-            list_notify: tokio::sync::Notify::new(),
+            list_append_notify: Mutex::new(HashMap::new()),
         }
+    }
+
+    async fn get_or_create_list_notify(&self, list_key: &str) -> Arc<Notify> {
+        let mut notify_map = self.list_append_notify.lock().await;
+        notify_map
+            .entry(list_key.to_string())
+            .or_insert_with(|| Arc::new(Notify::new()))
+            .clone()
     }
 
     pub async fn set(&self, key: String, value: String, expire: Option<i64>) {
@@ -56,31 +68,33 @@ impl Storage {
     }
 
     pub async fn append(&self, list_key: String, elements: Vec<String>) -> usize {
+        let list_notify = self.get_or_create_list_notify(&list_key).await;
         let mut data = self.data.write().await;
 
-        let item = data.entry(list_key).or_insert_with(|| Item {
+        let item = data.entry(list_key.clone()).or_insert_with(|| Item {
             value: ItemValue::List(VecDeque::new()),
             expire_at: None,
         });
 
         if let ItemValue::List(list) = &mut item.value {
             list.extend(elements);
-            self.list_notify.notify_waiters();
+            list_notify.notify_waiters();
             list.len()
         } else {
             // If the key exists but is not a list, we can choose to overwrite it or ignore the command.
             // Here, we choose to overwrite it with a new list containing the element.
             let len = elements.len();
             item.value = ItemValue::List(VecDeque::from(elements));
-            self.list_notify.notify_waiters();
+            list_notify.notify_waiters();
             len
         }
     }
 
     pub async fn prepend(&self, list_key: String, elements: Vec<String>) -> usize {
+        let list_notify = self.get_or_create_list_notify(&list_key).await;
         let mut data = self.data.write().await;
 
-        let item = data.entry(list_key).or_insert_with(|| Item {
+        let item = data.entry(list_key.clone()).or_insert_with(|| Item {
             value: ItemValue::List(VecDeque::new()),
             expire_at: None,
         });
@@ -89,14 +103,14 @@ impl Storage {
             for element in elements {
                 list.push_front(element);
             }
-            self.list_notify.notify_waiters();
+            list_notify.notify_waiters();
             list.len()
         } else {
             // If the key exists but is not a list, we can choose to overwrite it or ignore the command.
             // Here, we choose to overwrite it with a new list containing the element.
             let len = elements.len();
             item.value = ItemValue::List(VecDeque::from(elements));
-            self.list_notify.notify_waiters();
+            list_notify.notify_waiters();
             len
         }
     }
@@ -166,23 +180,16 @@ impl Storage {
     ) -> Option<String> {
         let future = async {
             loop {
-                let mut data = self.data.write().await;
-                if let Some(item) = data.get_mut(list_key)
-                    && let ItemValue::List(list) = &mut item.value
-                {
-                    if let Some(value) = list.pop_front() {
-                        // If the list is empty after popping, we can choose to remove the key from storage.
-                        if list.is_empty() {
-                            data.remove(list_key);
-                        }
+                // Subscribe before checking list state to avoid missing a concurrent wakeup.
+                let list_notify = self.get_or_create_list_notify(list_key).await;
+                let notified = list_notify.notified();
 
-                        return Some(value);
-                    }
+                if let Some(value) = self.pop_list_front(list_key).await {
+                    return Some(value);
                 }
 
-                drop(data);
                 // Keep waiting when the list is empty or missing; BLPOP should unblock on push or timeout.
-                self.list_notify.notified().await;
+                notified.await;
             }
         };
 
@@ -217,5 +224,16 @@ impl Storage {
             return Some(result);
         }
         None
+    }
+
+    pub async fn get_type(&self, key: &str) -> &'static str {
+        let data = self.data.read().await;
+        if let Some(item) = data.get(key) {
+            return match &item.value {
+                ItemValue::String(_) => "string",
+                ItemValue::List(_) => "list",
+            };
+        }
+        "none"
     }
 }

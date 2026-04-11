@@ -152,6 +152,10 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
                     RedisValue::BulkString(value),
                 ])
             })),
+
+        RedisCommand::Type(key) => Ok(RedisValue::SimpleString(
+            storage.get_type(&key).await.into(),
+        )),
     }
 }
 
@@ -476,5 +480,63 @@ mod tests {
             ]),
             "Expected BLPop to return the popped element 'a' along with the list key when the list is not empty"
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_response_blpop_two_waiters_two_elements() {
+        let storage = Arc::new(Storage::new());
+
+        let waiting1 = tokio::spawn({
+            let storage = storage.clone();
+            async move {
+                let blpop_cmd = RedisCommand::BLPop("mylist".to_string(), 1000);
+                get_response(blpop_cmd, &storage).await.unwrap()
+            }
+        });
+
+        let waiting2 = tokio::spawn({
+            let storage = storage.clone();
+            async move {
+                let blpop_cmd = RedisCommand::BLPop("mylist".to_string(), 1000);
+                get_response(blpop_cmd, &storage).await.unwrap()
+            }
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let rpush_cmd =
+            RedisCommand::RPush("mylist".to_string(), vec!["a".to_string(), "b".to_string()]);
+        get_response(rpush_cmd, &storage).await.unwrap();
+
+        let (result1, result2) = tokio::join!(waiting1, waiting2);
+
+        let response1 = result1.unwrap();
+        let response2 = result2.unwrap();
+
+        let expected_a = RedisValue::Array(vec![
+            RedisValue::BulkString("mylist".to_string()),
+            RedisValue::BulkString("a".to_string()),
+        ]);
+        let expected_b = RedisValue::Array(vec![
+            RedisValue::BulkString("mylist".to_string()),
+            RedisValue::BulkString("b".to_string()),
+        ]);
+
+        assert!(
+            (response1 == expected_a && response2 == expected_b)
+                || (response1 == expected_b && response2 == expected_a),
+            "Expected both waiters to receive one pushed element each"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_response_type() {
+        let storage = Arc::new(Storage::new());
+        let set_cmd = RedisCommand::Set("key".to_string(), "value".to_string(), None);
+        get_response(set_cmd, &storage).await.unwrap();
+
+        let type_cmd = RedisCommand::Type("key".to_string());
+        let response = get_response(type_cmd, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::SimpleString("string".into()));
     }
 }

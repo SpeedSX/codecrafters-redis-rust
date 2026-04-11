@@ -11,6 +11,7 @@ pub enum RedisCommand {
     LLen(String),
     LPop(String, Option<i64>),
     BLPop(String, i64),
+    Type(String),
 }
 
 impl RedisCommand {
@@ -152,6 +153,14 @@ impl RedisCommand {
         Ok(RedisCommand::BLPop(list_key, (timeout * 1000.0) as i64))
     }
 
+    fn parse_type_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let key = Self::require_bulk_string(&mut iter)?;
+        Ok(RedisCommand::Type(key))
+    }
+
     fn require_bulk_string<'a, I>(mut iter: I) -> Result<String, ()>
     where
         I: Iterator<Item = &'a RedisValue>,
@@ -226,6 +235,8 @@ impl TryFrom<&RedisValue> for RedisCommand {
                     "LPOP" => RedisCommand::parse_lpop_command(iter),
 
                     "BLPOP" => RedisCommand::parse_blpop_command(iter),
+
+                    "TYPE" => RedisCommand::parse_type_command(iter),
 
                     _ => Err(()),
                 }
@@ -453,6 +464,21 @@ mod tests {
                 assert_eq!(timeout, 500);
             }
             _ => panic!("Expected BLPOP command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_type() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("TYPE".to_string()),
+            RedisValue::BulkString("mykey".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::Type(key) => {
+                assert_eq!(key, "mykey");
+            }
+            _ => panic!("Expected TYPE command"),
         }
     }
 

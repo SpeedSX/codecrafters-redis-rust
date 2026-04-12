@@ -15,6 +15,8 @@ pub enum RedisError {
     #[error("")]
     GenericError,
     #[error("The ID specified in XADD is equal or smaller than the target stream top item")]
+    InvalidStreamIDOrder,
+    #[error("ERR The ID specified in XADD must be greater than 0-0")]
     InvalidStreamID,
 }
 
@@ -280,7 +282,7 @@ impl Storage {
         if let ItemValue::Stream(stream) = &mut item.value {
             if let Some((last_id, last_seq, _)) = stream.back() {
                 if id < *last_id || (id == *last_id && seq <= *last_seq) {
-                    return Err(RedisError::InvalidStreamID);
+                    return Err(RedisError::InvalidStreamIDOrder);
                 }
             }
             stream.push_back((id, seq, kv_array));

@@ -79,12 +79,14 @@ fn is_client_disconnect(error: &std::io::Error) -> bool {
 
 async fn process_input(input: &str, stream: &mut TcpStream, storage: &Arc<Storage>) {
     if let Ok(cmd) = RedisCommand::parse(input) {
-        let result = get_response(cmd, storage).await;
-        if let Ok(response) = result {
-            check_result(write_response(stream, response.to_string()).await);
-        } else {
-            println!("Failed to process command");
-            check_result(write_error_response(stream, result.err().unwrap()).await);
+        match get_response(cmd, storage).await {
+            Ok(response) => {
+                check_result(write_response(stream, response.to_string()).await);
+            }
+            Err(error) => {
+                println!("Failed to process command");
+                check_result(write_error_response(stream, error).await);
+            }
         }
     } else {
         println!("Failed to parse input");
@@ -171,7 +173,7 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
 async fn write_error_response(stream: &mut TcpStream, error: RedisError) -> Result<(), std::io::Error> {
     match error {
         RedisError::GenericError => write_response(stream, "-ERR\r\n").await,
-        RedisError::InvalidStreamID => write_response(stream, format!("-ERR {}\r\n", error)).await,
+        RedisError::InvalidStreamIDOrder | RedisError::InvalidStreamID => write_response(stream, format!("-ERR {}\r\n", error)).await,
     }
 }
 
@@ -612,7 +614,7 @@ mod tests {
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await;
-        assert_eq!(response, Err(RedisError::InvalidStreamID), "Expected error when trying to add an entry with an ID that is less than '2-0'");
+        assert_eq!(response, Err(RedisError::InvalidStreamIDOrder), "Expected error when trying to add an entry with an ID that is less than '2-0'");
     }
 
     #[tokio::test]
@@ -633,7 +635,7 @@ mod tests {
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await;
-        assert_eq!(response, Err(RedisError::InvalidStreamID), "Expected error when trying to add an entry with an ID sequence that is less than '2'");
+        assert_eq!(response, Err(RedisError::InvalidStreamIDOrder), "Expected error when trying to add an entry with an ID sequence that is less than '2'");
     }
 
     #[tokio::test]
@@ -648,6 +650,6 @@ mod tests {
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await;
-        assert_eq!(response, Err(RedisError::InvalidStreamID), "Expected error when trying to add an entry with an ID that is less than '0-1'");
+        assert_eq!(response, Err(RedisError::InvalidStreamIDOrder), "Expected error when trying to add an entry with an ID that is less than '0-1'");
     }
 }

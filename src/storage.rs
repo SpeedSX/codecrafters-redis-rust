@@ -14,7 +14,7 @@ enum ItemValue {
     List(VecDeque<String>),
     Set(HashMap<String, ()>),
     ZSet(HashMap<String, f64>),
-    Stream(VecDeque<(String, Vec<(String, String)>)>),
+    Stream(VecDeque<(i64, i64, Vec<(String, String)>)>),
     VectorSet(Vec<(f64, String)>),
 }
 
@@ -244,7 +244,7 @@ impl Storage {
                 ItemValue::Set(_) => "set",
                 ItemValue::ZSet(_) => "zset",
                 ItemValue::Stream(_) => "stream",
-                ItemValue::VectorSet(_) => "vector_set",
+                ItemValue::VectorSet(_) => "vectorset",
             };
         }
         "none"
@@ -253,9 +253,14 @@ impl Storage {
     pub async fn add_to_stream(
         &self,
         key: &str,
-        id: &str,
+        id: i64,
+        seq: i64,
         kv_array: Vec<(String, String)>,
-    ) -> Option<String> {
+    ) -> Result<(i64, i64), ()> {
+        if id < 0 || seq < 0 || (id == 0 && seq == 0) {
+            return Err(());
+        }
+        
         let mut data = self.data.write().await;
 
         let item = data.entry(key.to_string()).or_insert_with(|| Item {
@@ -264,13 +269,18 @@ impl Storage {
         });
 
         if let ItemValue::Stream(stream) = &mut item.value {
-            stream.push_back((id.to_string(), kv_array));
-            Some(id.to_string())
+            if let Some((last_id, last_seq, _)) = stream.back() {
+                if id < *last_id || (id == *last_id && seq <= *last_seq) {
+                    return Err(());
+                }
+            }
+            stream.push_back((id, seq, kv_array));
+            Ok((id, seq))
         } else {
             // If the key exists but is not a stream, we can choose to overwrite it or ignore the command.
             // Here, we choose to overwrite it with a new stream containing the element.
-            item.value = ItemValue::Stream(VecDeque::from(vec![(id.to_string(), kv_array)]));
-            Some(id.to_string())
+            item.value = ItemValue::Stream(VecDeque::from(vec![(id, seq, kv_array)]));
+            Ok((id, seq))
         }
     }
 }

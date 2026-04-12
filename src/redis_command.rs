@@ -12,7 +12,7 @@ pub enum RedisCommand {
     LPop(String, Option<i64>),
     BLPop(String, i64),
     Type(String),
-    XAdd(String, String, Vec<(String, String)>),
+    XAdd(String, i64, i64, Vec<(String, String)>),
 }
 
 impl RedisCommand {
@@ -168,6 +168,16 @@ impl RedisCommand {
     {
         let key = Self::require_bulk_string(&mut iter)?;
         let id = Self::require_bulk_string(&mut iter)?;
+
+        // Validate the ID format (should be like "12345-0")
+        let ids = id.split('-').collect::<Vec<&str>>();
+        if ids.len() != 2 {
+            return Err(());
+        }
+
+        let id = ids[0].parse::<i64>().map_err(|_| ())?;
+        let seq = ids[1].parse::<i64>().map_err(|_| ())?;
+
         let field = Self::require_bulk_string(&mut iter)?;
         let value = Self::require_bulk_string(&mut iter)?;
 
@@ -178,7 +188,7 @@ impl RedisCommand {
             kv_array.push((field.clone(), value));
         }
 
-        Ok(RedisCommand::XAdd(key, id, kv_array))
+        Ok(RedisCommand::XAdd(key, id, seq, kv_array))
     }
 
     fn require_bulk_string<'a, I>(mut iter: I) -> Result<String, ()>
@@ -509,7 +519,7 @@ mod tests {
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("XADD".to_string()),
             RedisValue::BulkString("mystream".to_string()),
-            RedisValue::BulkString("12345".to_string()),
+            RedisValue::BulkString("12345-1".to_string()),
             RedisValue::BulkString("field1".to_string()),
             RedisValue::BulkString("value1".to_string()),
             RedisValue::BulkString("field2".to_string()),
@@ -517,9 +527,10 @@ mod tests {
         ]);
         let cmd = RedisCommand::try_from(&value).unwrap();
         match cmd {
-            RedisCommand::XAdd(key, id, kv_array) => {
+            RedisCommand::XAdd(key, id, seq, kv_array) => {
                 assert_eq!(key, "mystream");
-                assert_eq!(id, "12345");
+                assert_eq!(id, 12345);
+                assert_eq!(seq, 1);
                 assert_eq!(
                     kv_array,
                     vec![
@@ -632,6 +643,18 @@ mod tests {
         assert!(
             RedisCommand::try_from(&value).is_err(),
             "Expected error for zero LPOP count"
+        );
+
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("XADD".to_string()),
+            RedisValue::BulkString("mystream".to_string()),
+            RedisValue::BulkString("12345".to_string()),
+            RedisValue::BulkString("field1".to_string()),
+            RedisValue::BulkString("value1".to_string()),
+        ]);
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for XADD command with invalid ID format"
         );
     }
 

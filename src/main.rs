@@ -157,12 +157,11 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
             storage.get_type(&key).await.into(),
         )),
 
-        RedisCommand::XAdd(key, id, kv_array) => Ok(RedisValue::BulkString(
+        RedisCommand::XAdd(key, id, seq, kv_array) =>
             storage
-                .add_to_stream(&key, &id, kv_array)
+                .add_to_stream(&key, id, seq, kv_array)
                 .await
-                .unwrap_or_else(|| "0".to_string()),
-        )),
+                .map(|(id, seq)| RedisValue::BulkString(format!("{id}-{seq}"))),
     }
 }
 
@@ -548,17 +547,101 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_response_xadd() {
+    async fn test_get_response_xadd_correct_id_order() {
         let storage = Arc::new(Storage::new());
-        let xadd_cmd = RedisCommand::XAdd(
+        let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
-            "1-0".to_string(),
-            vec![
-                ("field1".to_string(), "value1".to_string()),
-                ("field2".to_string(), "value2".to_string()),
-            ],
+            12345,
+            1,
+            vec![("field1".to_string(), "value1".to_string())],
         );
-        let response = get_response(xadd_cmd, &storage).await.unwrap();
-        assert_eq!(response, RedisValue::BulkString("1-0".to_string()));
+        get_response(xadd_cmd1, &storage).await.unwrap();
+
+        let xadd_cmd2 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            12346,
+            0,
+            vec![("field2".to_string(), "value2".to_string())],
+        );
+        let response = get_response(xadd_cmd2, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::BulkString("12346-0".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_response_xadd_correct_id_sequence_order() {
+        let storage = Arc::new(Storage::new());
+        let xadd_cmd1 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            1,
+            0,
+            vec![("field1".to_string(), "value1".to_string())],
+        );
+        get_response(xadd_cmd1, &storage).await.unwrap();
+
+        let xadd_cmd2 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            1,
+            1,
+            vec![("field2".to_string(), "value2".to_string())],
+        );
+        let response = get_response(xadd_cmd2, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::BulkString("1-1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_response_xadd_error_on_incorrect_id_order() {
+        let storage = Arc::new(Storage::new());
+        let xadd_cmd1 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            2,
+            0,
+            vec![("field1".to_string(), "value1".to_string())],
+        );
+        get_response(xadd_cmd1, &storage).await.unwrap();
+
+        let xadd_cmd2 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            1,
+            1,
+            vec![("field2".to_string(), "value2".to_string())],
+        );
+        let response = get_response(xadd_cmd2, &storage).await;
+        assert_eq!(response, Err(()), "Expected error when trying to add an entry with an ID that is less than '2-0'");
+    }
+
+    #[tokio::test]
+    async fn test_get_response_xadd_error_on_incorrect_id_sequence_order() {
+        let storage = Arc::new(Storage::new());
+        let xadd_cmd1 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            2,
+            2,
+            vec![("field1".to_string(), "value1".to_string())],
+        );
+        get_response(xadd_cmd1, &storage).await.unwrap();
+
+        let xadd_cmd2 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            2,
+            2,
+            vec![("field2".to_string(), "value2".to_string())],
+        );
+        let response = get_response(xadd_cmd2, &storage).await;
+        assert_eq!(response, Err(()), "Expected error when trying to add an entry with an ID sequence that is less than '2'");
+    }
+
+    #[tokio::test]
+    async fn test_get_response_xadd_check_minumum_id() {
+        let storage = Arc::new(Storage::new());
+
+        // check error is returned when trying to add an entry with an ID that is less than "0-1"
+        let xadd_cmd2 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            0,
+            0,
+            vec![("field2".to_string(), "value2".to_string())],
+        );
+        let response = get_response(xadd_cmd2, &storage).await;
+        assert_eq!(response, Err(()), "Expected error when trying to add an entry with an ID that is less than '0-1'");
     }
 }

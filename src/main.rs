@@ -12,6 +12,8 @@ use redis_command::RedisCommand;
 mod storage;
 use storage::Storage;
 
+use crate::storage::RedisError;
+
 #[tokio::main]
 async fn main() {
     println!("Logs from your program will appear here!");
@@ -89,7 +91,7 @@ async fn process_input(input: &str, stream: &mut TcpStream, storage: &Arc<Storag
     }
 }
 
-async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<RedisValue, ()> {
+async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<RedisValue, RedisError> {
     match cmd {
         RedisCommand::Ping => Ok(RedisValue::SimpleString("PONG".into())),
 
@@ -106,12 +108,12 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
             .map_or(RedisValue::NullBulkString, RedisValue::BulkString)),
 
         RedisCommand::RPush(list_key, elements) => {
-            let len = i64::try_from(storage.append(list_key, elements).await).map_err(|_| ())?;
+            let len = i64::try_from(storage.append(list_key, elements).await).map_err(|_| RedisError::GenericError)?;
             Ok(RedisValue::Integer(len))
         }
 
         RedisCommand::LPush(list_key, elements) => {
-            let len = i64::try_from(storage.prepend(list_key, elements).await).map_err(|_| ())?;
+            let len = i64::try_from(storage.prepend(list_key, elements).await).map_err(|_| RedisError::GenericError)?;
             Ok(RedisValue::Integer(len))
         }
 
@@ -119,13 +121,13 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
             .get_list_range(&list_key, start_index, end_index)
             .await
             .map(|vec| RedisValue::Array(vec.into_iter().map(RedisValue::BulkString).collect()))
-            .ok_or(()),
+            .ok_or(RedisError::GenericError),
 
         RedisCommand::LLen(list_key) => storage
             .get_list_len(&list_key)
             .await
             .map(|len| RedisValue::Integer(len as i64))
-            .ok_or(()),
+            .ok_or(RedisError::GenericError),
 
         RedisCommand::LPop(list_key, count) => {
             if let Some(count) = count {
@@ -606,7 +608,7 @@ mod tests {
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await;
-        assert_eq!(response, Err(()), "Expected error when trying to add an entry with an ID that is less than '2-0'");
+        assert_eq!(response, Err(RedisError::InvalidStreamID), "Expected error when trying to add an entry with an ID that is less than '2-0'");
     }
 
     #[tokio::test]
@@ -627,7 +629,7 @@ mod tests {
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await;
-        assert_eq!(response, Err(()), "Expected error when trying to add an entry with an ID sequence that is less than '2'");
+        assert_eq!(response, Err(RedisError::InvalidStreamID), "Expected error when trying to add an entry with an ID sequence that is less than '2'");
     }
 
     #[tokio::test]
@@ -642,6 +644,6 @@ mod tests {
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await;
-        assert_eq!(response, Err(()), "Expected error when trying to add an entry with an ID that is less than '0-1'");
+        assert_eq!(response, Err(RedisError::InvalidStreamID), "Expected error when trying to add an entry with an ID that is less than '0-1'");
     }
 }

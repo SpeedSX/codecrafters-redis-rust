@@ -4,10 +4,19 @@ use std::{
     time::Duration,
 };
 
+use thiserror::Error;
 use tokio::{
     sync::{Mutex, Notify, RwLock},
     time::Instant,
 };
+
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum RedisError {
+    #[error("")]
+    GenericError,
+    #[error("The ID specified in XADD is equal or smaller than the target stream top item")]
+    InvalidStreamID,
+}
 
 enum ItemValue {
     String(String),
@@ -256,9 +265,9 @@ impl Storage {
         id: i64,
         seq: i64,
         kv_array: Vec<(String, String)>,
-    ) -> Result<(i64, i64), ()> {
+    ) -> Result<(i64, i64), RedisError> {
         if id < 0 || seq < 0 || (id == 0 && seq == 0) {
-            return Err(());
+            return Err(RedisError::InvalidStreamID);
         }
         
         let mut data = self.data.write().await;
@@ -271,7 +280,7 @@ impl Storage {
         if let ItemValue::Stream(stream) = &mut item.value {
             if let Some((last_id, last_seq, _)) = stream.back() {
                 if id < *last_id || (id == *last_id && seq <= *last_seq) {
-                    return Err(());
+                    return Err(RedisError::InvalidStreamID);
                 }
             }
             stream.push_back((id, seq, kv_array));

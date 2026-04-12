@@ -79,15 +79,16 @@ fn is_client_disconnect(error: &std::io::Error) -> bool {
 
 async fn process_input(input: &str, stream: &mut TcpStream, storage: &Arc<Storage>) {
     if let Ok(cmd) = RedisCommand::parse(input) {
-        if let Ok(response) = get_response(cmd, storage).await {
+        let result = get_response(cmd, storage).await;
+        if let Ok(response) = result {
             check_result(write_response(stream, response.to_string()).await);
         } else {
             println!("Failed to process command");
-            check_result(write_error_response(stream).await);
+            check_result(write_error_response(stream, result.err().unwrap()).await);
         }
     } else {
         println!("Failed to parse input");
-        check_result(write_error_response(stream).await);
+        check_result(write_error_response(stream, RedisError::GenericError).await);
     }
 }
 
@@ -167,8 +168,11 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
     }
 }
 
-async fn write_error_response(stream: &mut TcpStream) -> Result<(), std::io::Error> {
-    stream.write_all(b"-ERR\r\n").await
+async fn write_error_response(stream: &mut TcpStream, error: RedisError) -> Result<(), std::io::Error> {
+    match error {
+        RedisError::GenericError => write_response(stream, "-ERR\r\n").await,
+        RedisError::InvalidStreamID => write_response(stream, format!("-ERR {}\r\n", error)).await,
+    }
 }
 
 async fn write_response<T: AsRef<str>>(

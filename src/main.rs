@@ -631,7 +631,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_response_xadd_check_minumum_id() {
+    async fn test_get_response_xadd_check_minimum_id() {
         let storage = Arc::new(Storage::new());
 
         // check error is returned when trying to add an entry with an ID that is less than "0-1"

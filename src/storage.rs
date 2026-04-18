@@ -273,7 +273,7 @@ impl Storage {
         seq: Option<i64>,
         kv_array: Vec<(String, String)>,
     ) -> Result<(i64, i64), RedisError> {
-        if id < 0 || seq.unwrap_or(0) < 0 || (id == 0 && seq.unwrap_or(0) == 0) {
+        if id < 0 || seq.unwrap_or(0) < 0 || (id == 0 && seq == Some(0)) {
             return Err(RedisError::InvalidStreamID);
         }
 
@@ -288,7 +288,7 @@ impl Storage {
             let actual_seq: i64;
             if let Some((last_id, last_seq, _)) = stream.back() {
                 // Existing stream
-                actual_seq = seq.unwrap_or(*last_seq + 1);  // Auto-increment seq if not provided
+                actual_seq = seq.unwrap_or(*last_seq + 1); // Auto-increment seq if not provided
                 // Check if the new ID is greater than the last ID, or if the ID is the same but the sequence number is greater.
                 if id < *last_id || (id == *last_id && actual_seq <= *last_seq) {
                     return Err(RedisError::InvalidStreamIDOrder);
@@ -304,7 +304,8 @@ impl Storage {
             // If the key exists but is not a stream, we can choose to overwrite it or ignore the command.
             // Here, we choose to overwrite it with a new stream containing the element.
             let actual_seq = seq.unwrap_or(if id == 0 { 1 } else { 0 });
-            storage_item.value = ItemValue::Stream(VecDeque::from(vec![(id, actual_seq, kv_array)]));
+            storage_item.value =
+                ItemValue::Stream(VecDeque::from(vec![(id, actual_seq, kv_array)]));
             Ok((id, actual_seq))
         }
     }

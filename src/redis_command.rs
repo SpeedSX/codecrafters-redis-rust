@@ -553,7 +553,7 @@ mod tests {
         }
     }
 
-     #[test]
+    #[test]
     fn test_try_from_xadd_auto_generated_seq() {
         let value = RedisValue::Array(vec![
             RedisValue::BulkString("XADD".to_string()),

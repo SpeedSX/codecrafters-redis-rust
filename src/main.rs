@@ -625,6 +625,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_response_xadd_zero_id_auto_sequence() {
+        let storage = Arc::new(Storage::new());
+        let xadd_cmd = RedisCommand::XAdd(
+            "mystream".to_string(),
+            0,
+            None,
+            vec![("field2".to_string(), "value2".to_string())],
+        );
+        let response = get_response(xadd_cmd, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::BulkString("0-1".to_string()));
+    }
+
+    #[tokio::test]
     async fn test_get_response_xadd_error_on_incorrect_id_order() {
         let storage = Arc::new(Storage::new());
         let xadd_cmd1 = RedisCommand::XAdd(

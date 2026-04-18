@@ -1,5 +1,22 @@
-use crate::redis_value::RedisValue;
+use thiserror::Error;
 
+use crate::redis_value::{RedisParseError, RedisValue};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum RedisCommandError {
+    #[error("invalid Redis command")]
+    Invalid,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum RedisCommandParseError {
+    #[error(transparent)]
+    Resp(#[from] RedisParseError),
+    #[error(transparent)]
+    Command(#[from] RedisCommandError),
+}
+
+#[derive(Debug)]
 pub enum RedisCommand {
     Echo(String),
     Ping,
@@ -17,33 +34,36 @@ pub enum RedisCommand {
 
 impl RedisCommand {
     #[allow(dead_code)]
-    pub fn parse<T>(input: T) -> Result<Self, ()>
+    pub fn parse<T>(input: T) -> Result<Self, RedisCommandParseError>
     where
         T: AsRef<str>,
     {
-        RedisValue::parse(input).and_then(|value| Self::try_from(&value))
+        let value = RedisValue::parse(input)?;
+        Self::try_from(&value).map_err(Into::into)
     }
 
-    pub fn parse_with_rest(input: &str) -> Result<(Self, &str), ()> {
-        RedisValue::parse_with_rest(input)
-            .and_then(|(value, rest)| Self::try_from(&value).map(|cmd| (cmd, rest)))
+    #[allow(dead_code)]
+    pub fn parse_with_rest(input: &str) -> Result<(Self, &str), RedisCommandParseError> {
+        let (value, rest) = RedisValue::parse_with_rest(input)?;
+        let cmd = Self::try_from(&value)?;
+        Ok((cmd, rest))
     }
 
-    fn parse_echo_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    fn parse_echo_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
         Self::require_bulk_string(&mut iter).map(RedisCommand::Echo)
     }
 
-    fn parse_get_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    fn parse_get_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
         Self::require_bulk_string(&mut iter).map(RedisCommand::Get)
     }
 
-    fn parse_set_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    fn parse_set_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
@@ -53,13 +73,13 @@ impl RedisCommand {
             let mult = match expire_option_str.to_uppercase().as_str() {
                 "PX" => 1,
                 "EX" => 1000,
-                _ => return Err(()),
+                _ => return Err(RedisCommandError::Invalid),
             };
             let expire_value = Self::require_int_arg(&mut iter)?;
             if expire_value > 0 {
                 Some(expire_value * mult)
             } else {
-                return Err(());
+                return Err(RedisCommandError::Invalid);
             }
         } else {
             None
@@ -68,7 +88,7 @@ impl RedisCommand {
         Ok(RedisCommand::Set(key, value, expire))
     }
 
-    fn parse_rpush_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    fn parse_rpush_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
@@ -86,13 +106,13 @@ impl RedisCommand {
             .collect::<Vec<String>>();
 
         if elements.is_empty() {
-            return Err(());
+            return Err(RedisCommandError::Invalid);
         }
 
         Ok(RedisCommand::RPush(list_key, elements))
     }
 
-    fn parse_lpush_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    fn parse_lpush_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
@@ -110,13 +130,13 @@ impl RedisCommand {
             .collect::<Vec<String>>();
 
         if elements.is_empty() {
-            return Err(());
+            return Err(RedisCommandError::Invalid);
         }
 
         Ok(RedisCommand::LPush(list_key, elements))
     }
 
-    fn parse_lrange_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    fn parse_lrange_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
@@ -126,7 +146,7 @@ impl RedisCommand {
         Ok(RedisCommand::LRange(list_key, start_index, end_index))
     }
 
-    fn parse_llen_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    fn parse_llen_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
@@ -134,7 +154,7 @@ impl RedisCommand {
         Ok(RedisCommand::LLen(list_key))
     }
 
-    fn parse_lpop_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    fn parse_lpop_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
@@ -144,13 +164,13 @@ impl RedisCommand {
         if let Some(count) = count
             && count <= 0
         {
-            return Err(());
+            return Err(RedisCommandError::Invalid);
         }
 
         Ok(RedisCommand::LPop(list_key, count))
     }
 
-    fn parse_blpop_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    fn parse_blpop_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
@@ -160,7 +180,7 @@ impl RedisCommand {
         Ok(RedisCommand::BLPop(list_key, (timeout * 1000.0) as i64))
     }
 
-    fn parse_type_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    fn parse_type_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
@@ -168,7 +188,7 @@ impl RedisCommand {
         Ok(RedisCommand::Type(key))
     }
 
-    fn parse_xadd_command<'a, I>(mut iter: I) -> Result<RedisCommand, ()>
+    fn parse_xadd_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
@@ -178,14 +198,20 @@ impl RedisCommand {
         // Validate the ID format (should be like "12345-0")
         let ids = id.split('-').collect::<Vec<&str>>();
         if ids.len() != 2 {
-            return Err(());
+            return Err(RedisCommandError::Invalid);
         }
 
-        let id = ids[0].parse::<i64>().map_err(|_| ())?;
+        let id = ids[0]
+            .parse::<i64>()
+            .map_err(|_| RedisCommandError::Invalid)?;
         let seq = if ids[1] == "*" {
             None
         } else {
-            Some(ids[1].parse::<i64>().map_err(|_| ())?)
+            Some(
+                ids[1]
+                    .parse::<i64>()
+                    .map_err(|_| RedisCommandError::Invalid)?,
+            )
         };
 
         let field = Self::require_bulk_string(&mut iter)?;
@@ -201,49 +227,56 @@ impl RedisCommand {
         Ok(RedisCommand::XAdd(key, id, seq, kv_array))
     }
 
-    fn require_bulk_string<'a, I>(mut iter: I) -> Result<String, ()>
+    fn require_bulk_string<'a, I>(mut iter: I) -> Result<String, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
         match iter.next() {
             Some(RedisValue::BulkString(s)) => Ok(s.clone()),
-            _ => Err(()),
+            _ => Err(RedisCommandError::Invalid),
         }
     }
 
-    fn require_int_arg<'a, I>(mut iter: I) -> Result<i64, ()>
+    fn require_int_arg<'a, I>(mut iter: I) -> Result<i64, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
         match iter.next() {
-            Some(RedisValue::BulkString(s)) => s.parse::<i64>().map_err(|_| ()),
-            _ => Err(()),
+            Some(RedisValue::BulkString(s)) => {
+                s.parse::<i64>().map_err(|_| RedisCommandError::Invalid)
+            }
+            _ => Err(RedisCommandError::Invalid),
         }
     }
 
-    fn require_float_arg<'a, I>(mut iter: I) -> Result<f64, ()>
+    fn require_float_arg<'a, I>(mut iter: I) -> Result<f64, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
         match iter.next() {
-            Some(RedisValue::BulkString(s)) => s.parse::<f64>().map_err(|_| ()),
-            _ => Err(()),
+            Some(RedisValue::BulkString(s)) => {
+                s.parse::<f64>().map_err(|_| RedisCommandError::Invalid)
+            }
+            _ => Err(RedisCommandError::Invalid),
         }
     }
 
-    fn match_int_arg<'a, I>(mut iter: I) -> Result<Option<i64>, ()>
+    fn match_int_arg<'a, I>(mut iter: I) -> Result<Option<i64>, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
         match iter.next() {
-            Some(RedisValue::BulkString(s)) => s.parse::<i64>().map(Some).map_err(|_| ()),
+            Some(RedisValue::BulkString(s)) => s
+                .parse::<i64>()
+                .map(Some)
+                .map_err(|_| RedisCommandError::Invalid),
             _ => Ok(None),
         }
     }
 }
 
 impl TryFrom<&RedisValue> for RedisCommand {
-    type Error = ();
+    type Error = RedisCommandError;
 
     fn try_from(value: &RedisValue) -> Result<RedisCommand, Self::Error> {
         match value {
@@ -252,7 +285,7 @@ impl TryFrom<&RedisValue> for RedisCommand {
 
                 let cmd_name = match iter.next() {
                     Some(RedisValue::BulkString(s)) => s.to_uppercase(),
-                    _ => return Err(()),
+                    _ => return Err(RedisCommandError::Invalid),
                 };
 
                 match cmd_name.as_str() {
@@ -280,14 +313,14 @@ impl TryFrom<&RedisValue> for RedisCommand {
 
                     "XADD" => RedisCommand::parse_xadd_command(iter),
 
-                    _ => Err(()),
+                    _ => Err(RedisCommandError::Invalid),
                 }
             }
             RedisValue::BulkString(_)
             | RedisValue::Integer(_)
             | RedisValue::SimpleString(_)
             | RedisValue::NullBulkString
-            | RedisValue::NullArray => Err(()),
+            | RedisValue::NullArray => Err(RedisCommandError::Invalid),
         }
     }
 }
@@ -705,5 +738,15 @@ mod tests {
             RedisCommand::Ping => (),
             _ => panic!("Expected Ping command"),
         }
+    }
+
+    #[test]
+    fn test_parse_with_rest_incomplete_frame() {
+        let input = "*1\r\n$4\r\nPIN";
+        let error = RedisCommand::parse_with_rest(input).unwrap_err();
+        assert_eq!(
+            error,
+            RedisCommandParseError::Resp(RedisParseError::Incomplete)
+        );
     }
 }

@@ -4,7 +4,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 mod redis_value;
-use redis_value::RedisValue;
+use redis_value::{RedisParseError, RedisValue};
 
 mod redis_command;
 use redis_command::RedisCommand;
@@ -46,10 +46,26 @@ async fn handle_connection(mut stream: TcpStream, storage: Arc<Storage>) {
                 accumulator.push_str(&String::from_utf8_lossy(&read_buf[..len]));
                 println!("Received: {accumulator}");
 
-                while let Ok((cmd, rest)) = RedisCommand::parse_with_rest(&accumulator) {
-                    let rest = rest.to_string();
-                    process_command(cmd, &mut stream, &storage).await;
-                    accumulator = rest;
+                loop {
+                    match RedisValue::parse_with_rest(&accumulator) {
+                        Ok((value, rest)) => {
+                            let rest = rest.to_string();
+
+                            match RedisCommand::try_from(&value) {
+                                Ok(cmd) => process_command(cmd, &mut stream, &storage).await,
+                                Err(_) => {
+                                    check_result(write_command_error_response(&mut stream).await);
+                                }
+                            }
+
+                            accumulator = rest;
+                        }
+                        Err(RedisParseError::Incomplete) => break,
+                        Err(RedisParseError::Protocol) => {
+                            check_result(write_protocol_error_response(&mut stream).await);
+                            return;
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -184,6 +200,14 @@ async fn write_error_response(
     }
 }
 
+async fn write_command_error_response(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    write_response(stream, "-ERR\r\n").await
+}
+
+async fn write_protocol_error_response(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    write_response(stream, "-ERR Protocol error\r\n").await
+}
+
 async fn write_response<T: AsRef<str>>(
     stream: &mut TcpStream,
     response: T,
@@ -194,6 +218,8 @@ async fn write_response<T: AsRef<str>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[tokio::test]
     async fn test_get_response_echo() {
@@ -713,5 +739,49 @@ mod tests {
             Err(RedisError::InvalidStreamID),
             "Expected error when trying to add an entry with an ID that is less than '0-1'"
         );
+    }
+
+    async fn connect_test_client() -> (tokio::task::JoinHandle<()>, tokio::net::TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let storage = Arc::new(Storage::new());
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_connection(stream, storage).await;
+        });
+
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        (server, client)
+    }
+
+    #[tokio::test]
+    async fn test_handle_connection_keeps_processing_after_command_error() {
+        let (server, mut client) = connect_test_client().await;
+
+        client
+            .write_all(b"*1\r\n$7\r\nUNKNOWN\r\n*1\r\n$4\r\nPING\r\n")
+            .await
+            .unwrap();
+
+        let mut response = [0u8; 13];
+        client.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"-ERR\r\n+PONG\r\n");
+
+        drop(client);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_handle_connection_closes_on_protocol_error() {
+        let (server, mut client) = connect_test_client().await;
+
+        client.write_all(b"!oops\r\n").await.unwrap();
+
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        assert_eq!(response, b"-ERR Protocol error\r\n");
+
+        server.await.unwrap();
     }
 }

@@ -1,5 +1,15 @@
 use std::{borrow::Cow, fmt::Display};
 
+use thiserror::Error;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum RedisParseError {
+    #[error("incomplete RESP frame")]
+    Incomplete,
+    #[error("invalid RESP frame")]
+    Protocol,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum RedisValue {
     Array(Vec<RedisValue>),
@@ -11,25 +21,27 @@ pub enum RedisValue {
 }
 
 impl RedisValue {
-    pub fn parse<T>(input: T) -> Result<Self, ()>
+    pub fn parse<T>(input: T) -> Result<Self, RedisParseError>
     where
         T: AsRef<str>,
     {
         Self::try_from(input.as_ref())
     }
 
-    pub fn parse_with_rest(s: &str) -> Result<(Self, &str), ()> {
-        match s.chars().next().ok_or(())? {
+    pub fn parse_with_rest(s: &str) -> Result<(Self, &str), RedisParseError> {
+        match s.chars().next().ok_or(RedisParseError::Incomplete)? {
             '*' => {
                 let (len_str, mut rest) = Self::read_next_value_str(s)?;
-                let len = len_str.parse::<usize>().map_err(|_| ())?;
+                let len = len_str
+                    .parse::<usize>()
+                    .map_err(|_| RedisParseError::Protocol)?;
                 let values = (0..len)
                     .map(|_| {
                         let (value, new_rest) = RedisValue::parse_with_rest(rest)?;
                         rest = new_rest;
                         Ok(value)
                     })
-                    .collect::<Result<Vec<_>, ()>>()?;
+                    .collect::<Result<Vec<_>, RedisParseError>>()?;
                 Ok((RedisValue::Array(values), rest))
             }
             '$' => {
@@ -38,34 +50,40 @@ impl RedisValue {
                     return Ok((RedisValue::NullBulkString, after_header));
                 }
 
-                let len = len_str.parse::<usize>().map_err(|_| ())?;
-                let value = after_header.get(..len).ok_or(())?;
-                let after_value = after_header.get(len..).ok_or(())?;
-                let rest = after_value.strip_prefix("\r\n").ok_or(())?;
+                let len = len_str
+                    .parse::<usize>()
+                    .map_err(|_| RedisParseError::Protocol)?;
+                let value = after_header.get(..len).ok_or(RedisParseError::Incomplete)?;
+                let after_value = after_header.get(len..).ok_or(RedisParseError::Incomplete)?;
+                let rest = after_value
+                    .strip_prefix("\r\n")
+                    .ok_or(RedisParseError::Incomplete)?;
                 Ok((RedisValue::BulkString(value.to_string()), rest))
             }
             ':' => {
                 let (value_str, rest) = Self::read_next_value_str(s)?;
-                let value = value_str.parse::<i64>().map_err(|_| ())?;
+                let value = value_str
+                    .parse::<i64>()
+                    .map_err(|_| RedisParseError::Protocol)?;
                 Ok((RedisValue::Integer(value), rest))
             }
             '+' => {
                 let (value_str, rest) = Self::read_next_value_str(s)?;
                 Ok((RedisValue::SimpleString(value_str.to_string().into()), rest))
             }
-            _ => Err(()),
+            _ => Err(RedisParseError::Protocol),
         }
     }
 
     // Reads the next value string (up to the next "\r\n") and returns it along with the remaining string.
-    fn read_next_value_str(s: &str) -> Result<(&str, &str), ()> {
-        let next = s.find("\r\n").ok_or(())?;
+    fn read_next_value_str(s: &str) -> Result<(&str, &str), RedisParseError> {
+        let next = s.find("\r\n").ok_or(RedisParseError::Incomplete)?;
         Ok((&s[1..next], &s[next + 2..]))
     }
 }
 
 impl TryFrom<&str> for RedisValue {
-    type Error = ();
+    type Error = RedisParseError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         RedisValue::parse_with_rest(s).map(|(value, _)| value)
@@ -102,7 +120,7 @@ impl Display for RedisValue {
 }
 
 impl TryFrom<String> for RedisValue {
-    type Error = ();
+    type Error = RedisParseError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         RedisValue::try_from(value.as_str())
@@ -153,5 +171,19 @@ mod tests {
         let input = ":123\r\n";
         let value = RedisValue::parse(input).unwrap();
         assert_eq!(value.to_string(), input);
+    }
+
+    #[test]
+    fn parse_incomplete_bulk_string() {
+        let input = "$5\r\nfoo";
+        let error = RedisValue::parse(input).unwrap_err();
+        assert_eq!(error, RedisParseError::Incomplete);
+    }
+
+    #[test]
+    fn parse_invalid_prefix() {
+        let input = "!oops\r\n";
+        let error = RedisValue::parse(input).unwrap_err();
+        assert_eq!(error, RedisParseError::Protocol);
     }
 }

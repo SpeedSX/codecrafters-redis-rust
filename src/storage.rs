@@ -288,7 +288,7 @@ impl Storage {
             let actual_seq: i64;
             if let Some((last_id, last_seq, _)) = stream.back() {
                 // Existing stream
-                actual_seq = seq.unwrap_or(*last_seq + 1); // Auto-increment seq if not provided
+                actual_seq = seq.unwrap_or(if id == *last_id { *last_seq + 1 } else { 0 }); // Auto-increment seq if not provided and id is the same as last_id
                 // Check if the new ID is greater than the last ID, or if the ID is the same but the sequence number is greater.
                 if id < *last_id || (id == *last_id && actual_seq <= *last_seq) {
                     return Err(RedisError::InvalidStreamIDOrder);

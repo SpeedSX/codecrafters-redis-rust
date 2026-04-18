@@ -622,6 +622,15 @@ mod tests {
         );
         let response = get_response(xadd_cmd2, &storage).await.unwrap();
         assert_eq!(response, RedisValue::BulkString("1-1".to_string()));
+
+        let xadd_cmd3 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            2,
+            None,
+            vec![("field2".to_string(), "value2".to_string())],
+        );
+        let response = get_response(xadd_cmd3, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::BulkString("2-0".to_string()));
     }
 
     #[tokio::test]

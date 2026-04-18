@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::Duration,
 };
@@ -20,12 +20,14 @@ pub enum RedisError {
     InvalidStreamID,
 }
 
+type StreamItem = (i64, i64, Vec<(String, String)>);
+
 enum ItemValue {
     String(String),
     List(VecDeque<String>),
-    Set(HashMap<String, ()>),
+    Set(HashSet<String>),
     ZSet(HashMap<String, f64>),
-    Stream(VecDeque<(i64, i64, Vec<(String, String)>)>),
+    Stream(VecDeque<StreamItem>),
     VectorSet(Vec<(f64, String)>),
 }
 
@@ -56,7 +58,7 @@ impl Storage {
     }
 
     pub async fn set(&self, key: String, value: String, expire: Option<i64>) {
-        let expire_at = expire.map(|ms| Instant::now() + Duration::from_millis(ms as u64));
+        let expire_at = expire.map(|ms| Instant::now() + Duration::from_millis(ms.cast_unsigned()));
         let item = Item {
             value: ItemValue::String(value),
             expire_at,
@@ -77,11 +79,11 @@ impl Storage {
             // TODO: we can return different types of values based on the actual type of the item, but for now we only support string values.
             return match &item.value {
                 ItemValue::String(s) => Some(s.clone()),
-                ItemValue::List(_) => None,
-                ItemValue::Set(_) => None,
-                ItemValue::ZSet(_) => None,
-                ItemValue::Stream(_) => None,
-                ItemValue::VectorSet(_) => None,
+                ItemValue::List(_)
+                | ItemValue::Set(_)
+                | ItemValue::ZSet(_)
+                | ItemValue::Stream(_)
+                | ItemValue::VectorSet(_) => None,
             };
         }
         None
@@ -161,8 +163,8 @@ impl Storage {
                 return Some(vec![]);
             }
 
-            let start = start.max(0) as usize;
-            let end = (end.min(len - 1)) as usize;
+            let start = usize::try_from(start.max(0)).ok()?;
+            let end = usize::try_from(end.min(len - 1)).ok()?;
 
             return Some(list.range(start..=end).cloned().collect());
         }
@@ -217,10 +219,13 @@ impl Storage {
             return future.await;
         }
 
-        tokio::time::timeout(std::time::Duration::from_millis(timeout as u64), future)
-            .await
-            .ok()
-            .flatten()
+        tokio::time::timeout(
+            std::time::Duration::from_millis(timeout.cast_unsigned()),
+            future,
+        )
+        .await
+        .ok()
+        .flatten()
     }
 
     pub async fn pop_list_front_n(&self, list_key: &str, count: i64) -> Option<Vec<String>> {
@@ -265,33 +270,42 @@ impl Storage {
         &self,
         key: &str,
         id: i64,
-        seq: i64,
+        seq: Option<i64>,
         kv_array: Vec<(String, String)>,
     ) -> Result<(i64, i64), RedisError> {
-        if id < 0 || seq < 0 || (id == 0 && seq == 0) {
+        if id < 0 || seq.unwrap_or(0) < 0 || (id == 0 && seq.unwrap_or(0) == 0) {
             return Err(RedisError::InvalidStreamID);
         }
-        
+
         let mut data = self.data.write().await;
 
-        let item = data.entry(key.to_string()).or_insert_with(|| Item {
+        let storage_item = data.entry(key.to_string()).or_insert_with(|| Item {
             value: ItemValue::Stream(VecDeque::new()),
             expire_at: None,
         });
 
-        if let ItemValue::Stream(stream) = &mut item.value {
+        if let ItemValue::Stream(stream) = &mut storage_item.value {
+            let actual_seq: i64;
             if let Some((last_id, last_seq, _)) = stream.back() {
-                if id < *last_id || (id == *last_id && seq <= *last_seq) {
+                // Existing stream
+                actual_seq = seq.unwrap_or(*last_seq + 1);  // Auto-increment seq if not provided
+                // Check if the new ID is greater than the last ID, or if the ID is the same but the sequence number is greater.
+                if id < *last_id || (id == *last_id && actual_seq <= *last_seq) {
                     return Err(RedisError::InvalidStreamIDOrder);
                 }
+            } else {
+                // New stream
+                actual_seq = seq.unwrap_or(if id == 0 { 1 } else { 0 });
             }
-            stream.push_back((id, seq, kv_array));
-            Ok((id, seq))
+
+            stream.push_back((id, actual_seq, kv_array));
+            Ok((id, actual_seq))
         } else {
             // If the key exists but is not a stream, we can choose to overwrite it or ignore the command.
             // Here, we choose to overwrite it with a new stream containing the element.
-            item.value = ItemValue::Stream(VecDeque::from(vec![(id, seq, kv_array)]));
-            Ok((id, seq))
+            let actual_seq = seq.unwrap_or(if id == 0 { 1 } else { 0 });
+            storage_item.value = ItemValue::Stream(VecDeque::from(vec![(id, actual_seq, kv_array)]));
+            Ok((id, actual_seq))
         }
     }
 }

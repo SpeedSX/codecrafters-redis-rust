@@ -18,7 +18,7 @@ impl RedisValue {
         Self::try_from(input.as_ref())
     }
 
-    fn parse_with_rest(s: &str) -> Result<(Self, &str), ()> {
+    pub fn parse_with_rest(s: &str) -> Result<(Self, &str), ()> {
         match s.chars().next().ok_or(())? {
             '*' => {
                 let (len_str, mut rest) = Self::read_next_value_str(s)?;

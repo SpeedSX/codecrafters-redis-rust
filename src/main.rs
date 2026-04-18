@@ -36,15 +36,21 @@ async fn main() {
 
 async fn handle_connection(mut stream: TcpStream, storage: Arc<Storage>) {
     const BUFFER_LENGTH: usize = 1024;
-    let mut buffer = vec![0u8; BUFFER_LENGTH];
+    let mut read_buf = vec![0u8; BUFFER_LENGTH];
+    let mut accumulator = String::new();
 
     loop {
-        match stream.read(&mut buffer).await {
+        match stream.read(&mut read_buf).await {
             Ok(0) => break, // connection closed
             Ok(len) => {
-                let raw_string = String::from_utf8_lossy(&buffer[..len]);
-                println!("Received: {raw_string}");
-                process_input(&raw_string, &mut stream, &storage).await;
+                accumulator.push_str(&String::from_utf8_lossy(&read_buf[..len]));
+                println!("Received: {accumulator}");
+
+                while let Ok((cmd, rest)) = RedisCommand::parse_with_rest(&accumulator) {
+                    let rest = rest.to_string();
+                    process_command(cmd, &mut stream, &storage).await;
+                    accumulator = rest;
+                }
             }
             Err(e) => {
                 log_connection_error("read", &e);
@@ -77,20 +83,15 @@ fn is_client_disconnect(error: &std::io::Error) -> bool {
     )
 }
 
-async fn process_input(input: &str, stream: &mut TcpStream, storage: &Arc<Storage>) {
-    if let Ok(cmd) = RedisCommand::parse(input) {
-        match get_response(cmd, storage).await {
-            Ok(response) => {
-                check_result(write_response(stream, response.to_string()).await);
-            }
-            Err(error) => {
-                println!("Failed to process command");
-                check_result(write_error_response(stream, error).await);
-            }
+async fn process_command(cmd: RedisCommand, stream: &mut TcpStream, storage: &Arc<Storage>) {
+    match get_response(cmd, storage).await {
+        Ok(response) => {
+            check_result(write_response(stream, response.to_string()).await);
         }
-    } else {
-        println!("Failed to parse input");
-        check_result(write_error_response(stream, RedisError::GenericError).await);
+        Err(error) => {
+            println!("Failed to process command: {error}");
+            check_result(write_error_response(stream, error).await);
+        }
     }
 }
 
@@ -111,12 +112,14 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
             .map_or(RedisValue::NullBulkString, RedisValue::BulkString)),
 
         RedisCommand::RPush(list_key, elements) => {
-            let len = i64::try_from(storage.append(list_key, elements).await).map_err(|_| RedisError::GenericError)?;
+            let len = i64::try_from(storage.append(list_key, elements).await)
+                .map_err(|_| RedisError::GenericError)?;
             Ok(RedisValue::Integer(len))
         }
 
         RedisCommand::LPush(list_key, elements) => {
-            let len = i64::try_from(storage.prepend(list_key, elements).await).map_err(|_| RedisError::GenericError)?;
+            let len = i64::try_from(storage.prepend(list_key, elements).await)
+                .map_err(|_| RedisError::GenericError)?;
             Ok(RedisValue::Integer(len))
         }
 
@@ -162,18 +165,22 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
             storage.get_type(&key).await.into(),
         )),
 
-        RedisCommand::XAdd(key, id, seq, kv_array) =>
-            storage
-                .add_to_stream(&key, id, seq, kv_array)
-                .await
-                .map(|(id, seq)| RedisValue::BulkString(format!("{id}-{seq}"))),
+        RedisCommand::XAdd(key, id, seq, kv_array) => storage
+            .add_to_stream(&key, id, seq, kv_array)
+            .await
+            .map(|(id, seq)| RedisValue::BulkString(format!("{id}-{seq}"))),
     }
 }
 
-async fn write_error_response(stream: &mut TcpStream, error: RedisError) -> Result<(), std::io::Error> {
+async fn write_error_response(
+    stream: &mut TcpStream,
+    error: RedisError,
+) -> Result<(), std::io::Error> {
     match error {
         RedisError::GenericError => write_response(stream, "-ERR\r\n").await,
-        RedisError::InvalidStreamIDOrder | RedisError::InvalidStreamID => write_response(stream, format!("-ERR {}\r\n", error)).await,
+        RedisError::InvalidStreamIDOrder | RedisError::InvalidStreamID => {
+            write_response(stream, format!("-ERR {error}\r\n")).await
+        }
     }
 }
 
@@ -560,7 +567,7 @@ mod tests {
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
             12345,
-            1,
+            Some(1),
             vec![("field1".to_string(), "value1".to_string())],
         );
         get_response(xadd_cmd1, &storage).await.unwrap();
@@ -568,7 +575,7 @@ mod tests {
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
             12346,
-            0,
+            Some(0),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await.unwrap();
@@ -581,7 +588,7 @@ mod tests {
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
             1,
-            0,
+            Some(0),
             vec![("field1".to_string(), "value1".to_string())],
         );
         get_response(xadd_cmd1, &storage).await.unwrap();
@@ -589,7 +596,28 @@ mod tests {
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
             1,
+            Some(1),
+            vec![("field2".to_string(), "value2".to_string())],
+        );
+        let response = get_response(xadd_cmd2, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::BulkString("1-1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_response_xadd_auto_sequence() {
+        let storage = Arc::new(Storage::new());
+        let xadd_cmd1 = RedisCommand::XAdd(
+            "mystream".to_string(),
             1,
+            Some(0),
+            vec![("field1".to_string(), "value1".to_string())],
+        );
+        get_response(xadd_cmd1, &storage).await.unwrap();
+
+        let xadd_cmd2 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            1,
+            None,
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await.unwrap();
@@ -602,7 +630,7 @@ mod tests {
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
             2,
-            0,
+            Some(0),
             vec![("field1".to_string(), "value1".to_string())],
         );
         get_response(xadd_cmd1, &storage).await.unwrap();
@@ -610,11 +638,15 @@ mod tests {
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
             1,
-            1,
+            Some(1),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await;
-        assert_eq!(response, Err(RedisError::InvalidStreamIDOrder), "Expected error when trying to add an entry with an ID that is less than '2-0'");
+        assert_eq!(
+            response,
+            Err(RedisError::InvalidStreamIDOrder),
+            "Expected error when trying to add an entry with an ID that is less than '2-0'"
+        );
     }
 
     #[tokio::test]
@@ -623,7 +655,7 @@ mod tests {
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
             2,
-            2,
+            Some(2),
             vec![("field1".to_string(), "value1".to_string())],
         );
         get_response(xadd_cmd1, &storage).await.unwrap();
@@ -631,11 +663,15 @@ mod tests {
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
             2,
-            2,
+            Some(2),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await;
-        assert_eq!(response, Err(RedisError::InvalidStreamIDOrder), "Expected error when trying to add an entry with an ID sequence that is less than '2'");
+        assert_eq!(
+            response,
+            Err(RedisError::InvalidStreamIDOrder),
+            "Expected error when trying to add an entry with an ID sequence that is less than '2'"
+        );
     }
 
     #[tokio::test]
@@ -646,10 +682,14 @@ mod tests {
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
             0,
-            0,
+            Some(0),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await;
-        assert_eq!(response, Err(RedisError::InvalidStreamIDOrder), "Expected error when trying to add an entry with an ID that is less than '0-1'");
+        assert_eq!(
+            response,
+            Err(RedisError::InvalidStreamID),
+            "Expected error when trying to add an entry with an ID that is less than '0-1'"
+        );
     }
 }

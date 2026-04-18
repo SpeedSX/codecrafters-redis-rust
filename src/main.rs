@@ -592,7 +592,7 @@ mod tests {
         let storage = Arc::new(Storage::new());
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
-            12345,
+            Some(12345),
             Some(1),
             vec![("field1".to_string(), "value1".to_string())],
         );
@@ -600,7 +600,7 @@ mod tests {
 
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
-            12346,
+            Some(12346),
             Some(0),
             vec![("field2".to_string(), "value2".to_string())],
         );
@@ -613,7 +613,7 @@ mod tests {
         let storage = Arc::new(Storage::new());
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
-            1,
+            Some(1),
             Some(0),
             vec![("field1".to_string(), "value1".to_string())],
         );
@@ -621,7 +621,7 @@ mod tests {
 
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
-            1,
+            Some(1),
             Some(1),
             vec![("field2".to_string(), "value2".to_string())],
         );
@@ -634,7 +634,7 @@ mod tests {
         let storage = Arc::new(Storage::new());
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
-            1,
+            Some(1),
             Some(0),
             vec![("field1".to_string(), "value1".to_string())],
         );
@@ -642,7 +642,7 @@ mod tests {
 
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
-            1,
+            Some(1),
             None,
             vec![("field2".to_string(), "value2".to_string())],
         );
@@ -651,7 +651,7 @@ mod tests {
 
         let xadd_cmd3 = RedisCommand::XAdd(
             "mystream".to_string(),
-            2,
+            Some(2),
             None,
             vec![("field2".to_string(), "value2".to_string())],
         );
@@ -664,7 +664,7 @@ mod tests {
         let storage = Arc::new(Storage::new());
         let xadd_cmd = RedisCommand::XAdd(
             "mystream".to_string(),
-            0,
+            Some(0),
             None,
             vec![("field2".to_string(), "value2".to_string())],
         );
@@ -673,11 +673,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_response_xadd_auto() {
+        let storage = Arc::new(Storage::new());
+        let xadd_cmd = RedisCommand::XAdd(
+            "mystream".to_string(),
+            None,
+            None,
+            vec![("field2".to_string(), "value2".to_string())],
+        );
+        let response = get_response(xadd_cmd, &storage).await.unwrap();
+        // first entry should be formatted as unixtime-0, but since we can't guarantee the exact timestamp in the test, we check that it ends with "-0"
+        if let RedisValue::BulkString(id) = response {
+            assert!(id.ends_with("-0"), "Expected ID to end with '-0' but got '{id}'");
+        } else {
+            panic!("Expected BulkString response but got {:?}", response);
+        }
+    }
+
+    #[tokio::test]
     async fn test_get_response_xadd_error_on_incorrect_id_order() {
         let storage = Arc::new(Storage::new());
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
-            2,
+            Some(2),
             Some(0),
             vec![("field1".to_string(), "value1".to_string())],
         );
@@ -685,7 +703,7 @@ mod tests {
 
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
-            1,
+            Some(1),
             Some(1),
             vec![("field2".to_string(), "value2".to_string())],
         );
@@ -702,7 +720,7 @@ mod tests {
         let storage = Arc::new(Storage::new());
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
-            2,
+            Some(2),
             Some(2),
             vec![("field1".to_string(), "value1".to_string())],
         );
@@ -710,7 +728,7 @@ mod tests {
 
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
-            2,
+            Some(2),
             Some(2),
             vec![("field2".to_string(), "value2".to_string())],
         );
@@ -729,7 +747,7 @@ mod tests {
         // check error is returned when trying to add an entry with an ID that is less than "0-1"
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
-            0,
+            Some(0),
             Some(0),
             vec![("field2".to_string(), "value2".to_string())],
         );

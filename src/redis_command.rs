@@ -29,7 +29,7 @@ pub enum RedisCommand {
     LPop(String, Option<i64>),
     BLPop(String, i64),
     Type(String),
-    XAdd(String, i64, Option<i64>, Vec<(String, String)>),
+    XAdd(String, Option<i64>, Option<i64>, Vec<(String, String)>),
 }
 
 impl RedisCommand {
@@ -201,17 +201,24 @@ impl RedisCommand {
             return Err(RedisCommandError::Invalid);
         }
 
-        let id = ids[0]
-            .parse::<i64>()
-            .map_err(|_| RedisCommandError::Invalid)?;
-        let seq = if ids[1] == "*" {
-            None
+        let (id, seq) = if ids[0] == "*" {
+            (None, None) // Use None as a placeholder for auto-generated ID
         } else {
-            Some(
-                ids[1]
-                    .parse::<i64>()
-                    .map_err(|_| RedisCommandError::Invalid)?,
-            )
+            let id = ids[0]
+                .parse::<i64>()
+                .map_err(|_| RedisCommandError::Invalid)?;
+            if ids[1] == "*" {
+                (Some(id), None)
+            } else {
+                (
+                    Some(id),
+                    Some(
+                        ids[1]
+                            .parse::<i64>()
+                            .map_err(|_| RedisCommandError::Invalid)?,
+                    ),
+                )
+            }
         };
 
         let field = Self::require_bulk_string(&mut iter)?;
@@ -572,7 +579,7 @@ mod tests {
         match cmd {
             RedisCommand::XAdd(key, id, seq, kv_array) => {
                 assert_eq!(key, "mystream");
-                assert_eq!(id, 12345);
+                assert_eq!(id, Some(12345));
                 assert_eq!(seq, Some(1));
                 assert_eq!(
                     kv_array,
@@ -601,7 +608,7 @@ mod tests {
         match cmd {
             RedisCommand::XAdd(key, id, seq, kv_array) => {
                 assert_eq!(key, "mystream");
-                assert_eq!(id, 12345);
+                assert_eq!(id, Some(12345));
                 assert_eq!(seq, None);
                 assert_eq!(
                     kv_array,

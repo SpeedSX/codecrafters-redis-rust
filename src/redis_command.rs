@@ -193,20 +193,21 @@ impl RedisCommand {
         I: Iterator<Item = &'a RedisValue>,
     {
         let key = Self::require_bulk_string(&mut iter)?;
-        let id = Self::require_bulk_string(&mut iter)?;
+        let id_str = Self::require_bulk_string(&mut iter)?;
 
-        // Validate the ID format (should be like "12345-0")
-        let ids = id.split('-').collect::<Vec<&str>>();
-        if ids.len() != 2 {
-            return Err(RedisCommandError::Invalid);
-        }
-
-        let (id, seq) = if ids[0] == "*" {
+        let (id, seq) = if id_str == "*" {
             (None, None) // Use None as a placeholder for auto-generated ID
         } else {
+            // Validate the ID format (should be like "12345-0")
+            let ids = id_str.split('-').collect::<Vec<&str>>();
+            if ids.len() != 2 {
+                return Err(RedisCommandError::Invalid);
+            }
+
             let id = ids[0]
                 .parse::<i64>()
                 .map_err(|_| RedisCommandError::Invalid)?;
+
             if ids[1] == "*" {
                 (Some(id), None)
             } else {
@@ -615,6 +616,32 @@ mod tests {
                     vec![
                         ("field1".to_string(), "value1".to_string()),
                         ("field2".to_string(), "value2".to_string())
+                    ]
+                );
+            }
+            _ => panic!("Expected XADD command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_xadd_auto_generated_id() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("XADD".to_string()),
+            RedisValue::BulkString("mystream".to_string()),
+            RedisValue::BulkString("*".to_string()),
+            RedisValue::BulkString("field1".to_string()),
+            RedisValue::BulkString("value1".to_string())
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::XAdd(key, id, seq, kv_array) => {
+                assert_eq!(key, "mystream");
+                assert_eq!(id, None);
+                assert_eq!(seq, None);
+                assert_eq!(
+                    kv_array,
+                    vec![
+                        ("field1".to_string(), "value1".to_string())
                     ]
                 );
             }

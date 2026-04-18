@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
-    time::{Duration, UNIX_EPOCH},
+    time::Duration,
 };
 
 use thiserror::Error;
@@ -287,7 +287,7 @@ impl Storage {
         let actual_id = id.unwrap_or(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_millis() as i64,
         ); // unix time in milliseconds by default, or the provided id
 

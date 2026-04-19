@@ -1,3 +1,4 @@
+use std::iter::once;
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -200,13 +201,9 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
                                 RedisValue::BulkString(format!("{id}-{seq}")),
                                 RedisValue::Array(
                                     kv_array
-                                        .into_iter()
-                                        .map(|(k, v)| {
-                                            RedisValue::Array(vec![
-                                                RedisValue::BulkString(k),
-                                                RedisValue::BulkString(v),
-                                            ])
-                                        })
+                                        .iter()
+                                        .flat_map(|tup| [&tup.0, &tup.1])
+                                        .map(|s| RedisValue::BulkString(s.clone()))
                                         .collect(),
                                 ),
                             ];
@@ -803,17 +800,17 @@ mod tests {
             RedisValue::Array(vec![
                 RedisValue::Array(vec![
                     RedisValue::BulkString("1-0".to_string()),
-                    RedisValue::Array(vec![RedisValue::Array(vec![
+                    RedisValue::Array(vec![
                         RedisValue::BulkString("field1".to_string()),
                         RedisValue::BulkString("value1".to_string())
-                    ])])
+                    ])
                 ]),
                 RedisValue::Array(vec![
                     RedisValue::BulkString("2-0".to_string()),
-                    RedisValue::Array(vec![RedisValue::Array(vec![
+                    RedisValue::Array(vec![
                         RedisValue::BulkString("field2".to_string()),
                         RedisValue::BulkString("value2".to_string())
-                    ])])
+                    ])
                 ])
             ]),
             "Expected XRange to return both entries in the stream within the specified range"

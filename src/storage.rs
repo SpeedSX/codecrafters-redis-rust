@@ -320,4 +320,28 @@ impl Storage {
             Ok((actual_id, actual_seq))
         }
     }
+
+    pub async fn get_stream_range(
+        &self,
+        key: &str,
+        start_id: (i64, Option<i64>),
+        end_id: (i64, Option<i64>),
+    ) -> Option<Vec<(i64, i64, Vec<(String, String)>)>> {
+        let data = self.data.read().await;
+        if let Some(item) = data.get(key)
+            && let ItemValue::Stream(stream) = &item.value
+        {
+            let result = stream
+                .iter()
+                .filter(|(id, seq, _)| {
+                    (*id > start_id.0 || (*id == start_id.0 && *seq >= start_id.1.unwrap_or(0)))
+                        && (*id < end_id.0
+                            || (*id == end_id.0 && *seq <= end_id.1.unwrap_or(i64::MAX)))
+                })
+                .cloned()
+                .collect();
+            return Some(result);
+        }
+        None
+    }
 }

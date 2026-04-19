@@ -1,6 +1,9 @@
 use thiserror::Error;
 
-use crate::redis_value::{RedisParseError, RedisValue};
+use crate::{
+    parsing::Parse,
+    redis_value::{RedisParseError, RedisValue},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum RedisCommandError {
@@ -16,6 +19,9 @@ pub enum RedisCommandParseError {
     Command(#[from] RedisCommandError),
 }
 
+type StreamId = (Option<i64>, Option<i64>); // (timestamp, sequence number)
+type StreamRangeBound = (i64, Option<i64>);
+
 #[derive(Debug)]
 pub enum RedisCommand {
     Echo(String),
@@ -29,7 +35,8 @@ pub enum RedisCommand {
     LPop(String, Option<i64>),
     BLPop(String, i64),
     Type(String),
-    XAdd(String, Option<i64>, Option<i64>, Vec<(String, String)>),
+    XAdd(String, StreamId, Vec<(String, String)>),
+    XRange(String, StreamRangeBound, StreamRangeBound),
 }
 
 impl RedisCommand {
@@ -53,29 +60,29 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        Self::require_bulk_string(&mut iter).map(RedisCommand::Echo)
+        iter.require_bulk_string().map(RedisCommand::Echo)
     }
 
     fn parse_get_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        Self::require_bulk_string(&mut iter).map(RedisCommand::Get)
+        iter.require_bulk_string().map(RedisCommand::Get)
     }
 
     fn parse_set_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let key = Self::require_bulk_string(&mut iter)?;
-        let value = Self::require_bulk_string(&mut iter)?;
+        let key = iter.require_bulk_string()?;
+        let value = iter.require_bulk_string()?;
         let expire = if let Some(RedisValue::BulkString(expire_option_str)) = iter.next() {
             let mult = match expire_option_str.to_uppercase().as_str() {
                 "PX" => 1,
                 "EX" => 1000,
                 _ => return Err(RedisCommandError::Invalid),
             };
-            let expire_value = Self::require_int_arg(&mut iter)?;
+            let expire_value = iter.require_int_arg()?;
             if expire_value > 0 {
                 Some(expire_value * mult)
             } else {
@@ -92,7 +99,7 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let list_key = Self::require_bulk_string(&mut iter)?;
+        let list_key = iter.require_bulk_string()?;
 
         // Should we allow non-bulk string values to be added to the list? For simplicity, we will only allow bulk strings.
         let elements = iter
@@ -116,7 +123,7 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let list_key = Self::require_bulk_string(&mut iter)?;
+        let list_key = iter.require_bulk_string()?;
 
         // Should we allow non-bulk string values to be added to the list? For simplicity, we will only allow bulk strings.
         let elements = iter
@@ -140,9 +147,9 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let list_key = Self::require_bulk_string(&mut iter)?;
-        let start_index = Self::require_int_arg(&mut iter)?;
-        let end_index = Self::require_int_arg(&mut iter)?;
+        let list_key = iter.require_bulk_string()?;
+        let start_index = iter.require_int_arg()?;
+        let end_index = iter.require_int_arg()?;
         Ok(RedisCommand::LRange(list_key, start_index, end_index))
     }
 
@@ -150,7 +157,7 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let list_key = Self::require_bulk_string(&mut iter)?;
+        let list_key = iter.require_bulk_string()?;
         Ok(RedisCommand::LLen(list_key))
     }
 
@@ -158,8 +165,8 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let list_key = Self::require_bulk_string(&mut iter)?;
-        let count = Self::match_int_arg(&mut iter)?;
+        let list_key = iter.require_bulk_string()?;
+        let count = iter.match_int_arg()?;
 
         if let Some(count) = count
             && count <= 0
@@ -174,8 +181,8 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let list_key = Self::require_bulk_string(&mut iter)?;
-        let timeout = Self::require_float_arg(&mut iter)?;
+        let list_key = iter.require_bulk_string()?;
+        let timeout = iter.require_float_arg()?;
 
         Ok(RedisCommand::BLPop(list_key, (timeout * 1000.0) as i64))
     }
@@ -184,7 +191,7 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let key = Self::require_bulk_string(&mut iter)?;
+        let key = iter.require_bulk_string()?;
         Ok(RedisCommand::Type(key))
     }
 
@@ -192,8 +199,8 @@ impl RedisCommand {
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        let key = Self::require_bulk_string(&mut iter)?;
-        let id_str = Self::require_bulk_string(&mut iter)?;
+        let key = iter.require_bulk_string()?;
+        let id_str = iter.require_bulk_string()?;
 
         let (id, seq) = if id_str == "*" {
             (None, None) // Use None as a placeholder for auto-generated ID
@@ -222,64 +229,51 @@ impl RedisCommand {
             }
         };
 
-        let field = Self::require_bulk_string(&mut iter)?;
-        let value = Self::require_bulk_string(&mut iter)?;
+        let field = iter.require_bulk_string()?;
+        let value = iter.require_bulk_string()?;
 
         let mut kv_array = vec![(field, value)];
 
         while let Some(RedisValue::BulkString(field)) = iter.next() {
-            let value = Self::require_bulk_string(&mut iter)?;
+            let value = iter.require_bulk_string()?;
             kv_array.push((field.clone(), value));
         }
 
-        Ok(RedisCommand::XAdd(key, id, seq, kv_array))
+        Ok(RedisCommand::XAdd(key, (id, seq), kv_array))
     }
 
-    fn require_bulk_string<'a, I>(mut iter: I) -> Result<String, RedisCommandError>
+    fn parse_xrange_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
     where
         I: Iterator<Item = &'a RedisValue>,
     {
-        match iter.next() {
-            Some(RedisValue::BulkString(s)) => Ok(s.clone()),
-            _ => Err(RedisCommandError::Invalid),
-        }
-    }
+        let key = iter.require_bulk_string()?;
+        let start_str = iter.require_bulk_string()?;
+        let end_str = iter.require_bulk_string()?;
 
-    fn require_int_arg<'a, I>(mut iter: I) -> Result<i64, RedisCommandError>
-    where
-        I: Iterator<Item = &'a RedisValue>,
-    {
-        match iter.next() {
-            Some(RedisValue::BulkString(s)) => {
-                s.parse::<i64>().map_err(|_| RedisCommandError::Invalid)
+        let parse_bound = |s: &str| -> Result<(i64, Option<i64>), RedisCommandError> {
+            let parts = s.split('-').collect::<Vec<&str>>();
+            if parts.len() == 1 {
+                let timestamp = parts[0]
+                    .parse::<i64>()
+                    .map_err(|_| RedisCommandError::Invalid)?;
+                Ok((timestamp, None))
+            } else if parts.len() == 2 {
+                let timestamp = parts[0]
+                    .parse::<i64>()
+                    .map_err(|_| RedisCommandError::Invalid)?;
+                let seq = parts[1]
+                    .parse::<i64>()
+                    .map_err(|_| RedisCommandError::Invalid)?;
+                Ok((timestamp, Some(seq)))
+            } else {
+                Err(RedisCommandError::Invalid)
             }
-            _ => Err(RedisCommandError::Invalid),
-        }
-    }
+        };
 
-    fn require_float_arg<'a, I>(mut iter: I) -> Result<f64, RedisCommandError>
-    where
-        I: Iterator<Item = &'a RedisValue>,
-    {
-        match iter.next() {
-            Some(RedisValue::BulkString(s)) => {
-                s.parse::<f64>().map_err(|_| RedisCommandError::Invalid)
-            }
-            _ => Err(RedisCommandError::Invalid),
-        }
-    }
+        let start = parse_bound(&start_str)?;
+        let end = parse_bound(&end_str)?;
 
-    fn match_int_arg<'a, I>(mut iter: I) -> Result<Option<i64>, RedisCommandError>
-    where
-        I: Iterator<Item = &'a RedisValue>,
-    {
-        match iter.next() {
-            Some(RedisValue::BulkString(s)) => s
-                .parse::<i64>()
-                .map(Some)
-                .map_err(|_| RedisCommandError::Invalid),
-            _ => Ok(None),
-        }
+        Ok(RedisCommand::XRange(key, start, end))
     }
 }
 
@@ -320,6 +314,8 @@ impl TryFrom<&RedisValue> for RedisCommand {
                     "TYPE" => RedisCommand::parse_type_command(iter),
 
                     "XADD" => RedisCommand::parse_xadd_command(iter),
+
+                    "XRANGE" => RedisCommand::parse_xrange_command(iter),
 
                     _ => Err(RedisCommandError::Invalid),
                 }
@@ -578,7 +574,7 @@ mod tests {
         ]);
         let cmd = RedisCommand::try_from(&value).unwrap();
         match cmd {
-            RedisCommand::XAdd(key, id, seq, kv_array) => {
+            RedisCommand::XAdd(key, (id, seq), kv_array) => {
                 assert_eq!(key, "mystream");
                 assert_eq!(id, Some(12345));
                 assert_eq!(seq, Some(1));
@@ -607,7 +603,7 @@ mod tests {
         ]);
         let cmd = RedisCommand::try_from(&value).unwrap();
         match cmd {
-            RedisCommand::XAdd(key, id, seq, kv_array) => {
+            RedisCommand::XAdd(key, (id, seq), kv_array) => {
                 assert_eq!(key, "mystream");
                 assert_eq!(id, Some(12345));
                 assert_eq!(seq, None);
@@ -630,22 +626,55 @@ mod tests {
             RedisValue::BulkString("mystream".to_string()),
             RedisValue::BulkString("*".to_string()),
             RedisValue::BulkString("field1".to_string()),
-            RedisValue::BulkString("value1".to_string())
+            RedisValue::BulkString("value1".to_string()),
         ]);
         let cmd = RedisCommand::try_from(&value).unwrap();
         match cmd {
-            RedisCommand::XAdd(key, id, seq, kv_array) => {
+            RedisCommand::XAdd(key, (id, seq), kv_array) => {
                 assert_eq!(key, "mystream");
                 assert_eq!(id, None);
                 assert_eq!(seq, None);
-                assert_eq!(
-                    kv_array,
-                    vec![
-                        ("field1".to_string(), "value1".to_string())
-                    ]
-                );
+                assert_eq!(kv_array, vec![("field1".to_string(), "value1".to_string())]);
             }
             _ => panic!("Expected XADD command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_xrange_with_seq() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("XRANGE".to_string()),
+            RedisValue::BulkString("mystream".to_string()),
+            RedisValue::BulkString("12345-1".to_string()),
+            RedisValue::BulkString("67890-2".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::XRange(key, start, end) => {
+                assert_eq!(key, "mystream");
+                assert_eq!(start, (12345, Some(1)));
+                assert_eq!(end, (67890, Some(2)));
+            }
+            _ => panic!("Expected XRANGE command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_xrange_without_seq() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("XRANGE".to_string()),
+            RedisValue::BulkString("mystream".to_string()),
+            RedisValue::BulkString("12345".to_string()),
+            RedisValue::BulkString("67890".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::XRange(key, start, end) => {
+                assert_eq!(key, "mystream");
+                assert_eq!(start, (12345, None));
+                assert_eq!(end, (67890, None));
+            }
+            _ => panic!("Expected XRANGE command"),
         }
     }
 
@@ -761,6 +790,15 @@ mod tests {
         assert!(
             RedisCommand::try_from(&value).is_err(),
             "Expected error for XADD command with invalid ID format"
+        );
+
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("XRANGE".to_string()),
+            RedisValue::BulkString("mystream".to_string()),
+        ]);
+        assert!(
+            RedisCommand::try_from(&value).is_err(),
+            "Expected error for XRANGE command with missing bounds"
         );
     }
 

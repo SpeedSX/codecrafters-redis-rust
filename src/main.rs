@@ -12,6 +12,8 @@ use redis_command::RedisCommand;
 mod storage;
 use storage::Storage;
 
+mod parsing;
+
 use crate::storage::RedisError;
 
 #[tokio::main]
@@ -181,10 +183,39 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
             storage.get_type(&key).await.into(),
         )),
 
-        RedisCommand::XAdd(key, id, seq, kv_array) => storage
+        RedisCommand::XAdd(key, (id, seq), kv_array) => storage
             .add_to_stream(&key, id, seq, kv_array)
             .await
             .map(|(id, seq)| RedisValue::BulkString(format!("{id}-{seq}"))),
+
+        RedisCommand::XRange(key, start, end) => storage
+            .get_stream_range(&key, start, end)
+            .await
+            .map(|entries| {
+                RedisValue::Array(
+                    entries
+                        .into_iter()
+                        .map(|(id, seq, kv_array)| {
+                            let entry_vec = vec![
+                                RedisValue::BulkString(format!("{id}-{seq}")),
+                                RedisValue::Array(
+                                    kv_array
+                                        .into_iter()
+                                        .map(|(k, v)| {
+                                            RedisValue::Array(vec![
+                                                RedisValue::BulkString(k),
+                                                RedisValue::BulkString(v),
+                                            ])
+                                        })
+                                        .collect(),
+                                ),
+                            ];
+                            RedisValue::Array(entry_vec)
+                        })
+                        .collect(),
+                )
+            })
+            .ok_or(RedisError::GenericError),
     }
 }
 
@@ -592,16 +623,14 @@ mod tests {
         let storage = Arc::new(Storage::new());
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(12345),
-            Some(1),
+            (Some(12345), Some(1)),
             vec![("field1".to_string(), "value1".to_string())],
         );
         get_response(xadd_cmd1, &storage).await.unwrap();
 
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(12346),
-            Some(0),
+            (Some(12346), Some(0)),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await.unwrap();
@@ -613,16 +642,14 @@ mod tests {
         let storage = Arc::new(Storage::new());
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(1),
-            Some(0),
+            (Some(1), Some(0)),
             vec![("field1".to_string(), "value1".to_string())],
         );
         get_response(xadd_cmd1, &storage).await.unwrap();
 
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(1),
-            Some(1),
+            (Some(1), Some(1)),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await.unwrap();
@@ -634,16 +661,14 @@ mod tests {
         let storage = Arc::new(Storage::new());
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(1),
-            Some(0),
+            (Some(1), Some(0)),
             vec![("field1".to_string(), "value1".to_string())],
         );
         get_response(xadd_cmd1, &storage).await.unwrap();
 
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(1),
-            None,
+            (Some(1), None),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await.unwrap();
@@ -651,8 +676,7 @@ mod tests {
 
         let xadd_cmd3 = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(2),
-            None,
+            (Some(2), None),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd3, &storage).await.unwrap();
@@ -664,8 +688,7 @@ mod tests {
         let storage = Arc::new(Storage::new());
         let xadd_cmd = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(0),
-            None,
+            (Some(0), None),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd, &storage).await.unwrap();
@@ -677,14 +700,16 @@ mod tests {
         let storage = Arc::new(Storage::new());
         let xadd_cmd = RedisCommand::XAdd(
             "mystream".to_string(),
-            None,
-            None,
+            (None, None),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd, &storage).await.unwrap();
         // first entry should be formatted as unixtime-0, but since we can't guarantee the exact timestamp in the test, we check that it ends with "-0"
         if let RedisValue::BulkString(id) = response {
-            assert!(id.ends_with("-0"), "Expected ID to end with '-0' but got '{id}'");
+            assert!(
+                id.ends_with("-0"),
+                "Expected ID to end with '-0' but got '{id}'"
+            );
         } else {
             panic!("Expected BulkString response but got {:?}", response);
         }
@@ -695,16 +720,14 @@ mod tests {
         let storage = Arc::new(Storage::new());
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(2),
-            Some(0),
+            (Some(2), Some(0)),
             vec![("field1".to_string(), "value1".to_string())],
         );
         get_response(xadd_cmd1, &storage).await.unwrap();
 
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(1),
-            Some(1),
+            (Some(1), Some(1)),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await;
@@ -720,16 +743,14 @@ mod tests {
         let storage = Arc::new(Storage::new());
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(2),
-            Some(2),
+            (Some(2), Some(2)),
             vec![("field1".to_string(), "value1".to_string())],
         );
         get_response(xadd_cmd1, &storage).await.unwrap();
 
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(2),
-            Some(2),
+            (Some(2), Some(2)),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await;
@@ -747,8 +768,7 @@ mod tests {
         // check error is returned when trying to add an entry with an ID that is less than "0-1"
         let xadd_cmd2 = RedisCommand::XAdd(
             "mystream".to_string(),
-            Some(0),
-            Some(0),
+            (Some(0), Some(0)),
             vec![("field2".to_string(), "value2".to_string())],
         );
         let response = get_response(xadd_cmd2, &storage).await;
@@ -756,6 +776,47 @@ mod tests {
             response,
             Err(RedisError::InvalidStreamID),
             "Expected error when trying to add an entry with an ID that is less than '0-1'"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_response_xrange() {
+        let storage = Arc::new(Storage::new());
+        let xadd_cmd1 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            (Some(1), Some(0)),
+            vec![("field1".to_string(), "value1".to_string())],
+        );
+        get_response(xadd_cmd1, &storage).await.unwrap();
+
+        let xadd_cmd2 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            (Some(2), Some(0)),
+            vec![("field2".to_string(), "value2".to_string())],
+        );
+        get_response(xadd_cmd2, &storage).await.unwrap();
+
+        let xrange_cmd = RedisCommand::XRange("mystream".to_string(), (1, Some(0)), (2, Some(0)));
+        let response = get_response(xrange_cmd, &storage).await.unwrap();
+        assert_eq!(
+            response,
+            RedisValue::Array(vec![
+                RedisValue::Array(vec![
+                    RedisValue::BulkString("1-0".to_string()),
+                    RedisValue::Array(vec![RedisValue::Array(vec![
+                        RedisValue::BulkString("field1".to_string()),
+                        RedisValue::BulkString("value1".to_string())
+                    ])])
+                ]),
+                RedisValue::Array(vec![
+                    RedisValue::BulkString("2-0".to_string()),
+                    RedisValue::Array(vec![RedisValue::Array(vec![
+                        RedisValue::BulkString("field2".to_string()),
+                        RedisValue::BulkString("value2".to_string())
+                    ])])
+                ])
+            ]),
+            "Expected XRange to return both entries in the stream within the specified range"
         );
     }
 

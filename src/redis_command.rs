@@ -270,7 +270,11 @@ impl RedisCommand {
             }
         };
 
-        let start = parse_bound(&start_str)?;
+        let start = if start_str == "-" {
+            (0, Some(0)) // Special case for "-" which represents the minimum ID
+        } else {
+            parse_bound(&start_str)?
+        };
         let end = parse_bound(&end_str)?;
 
         Ok(RedisCommand::XRange(key, start, end))
@@ -672,6 +676,25 @@ mod tests {
             RedisCommand::XRange(key, start, end) => {
                 assert_eq!(key, "mystream");
                 assert_eq!(start, (12345, None));
+                assert_eq!(end, (67890, None));
+            }
+            _ => panic!("Expected XRANGE command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_xrange_from_min() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("XRANGE".to_string()),
+            RedisValue::BulkString("mystream".to_string()),
+            RedisValue::BulkString("-".to_string()),
+            RedisValue::BulkString("67890".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::XRange(key, start, end) => {
+                assert_eq!(key, "mystream");
+                assert_eq!(start, (0, Some(0)));
                 assert_eq!(end, (67890, None));
             }
             _ => panic!("Expected XRANGE command"),

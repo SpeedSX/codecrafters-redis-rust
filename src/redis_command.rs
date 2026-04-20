@@ -275,7 +275,11 @@ impl RedisCommand {
         } else {
             parse_bound(&start_str)?
         };
-        let end = parse_bound(&end_str)?;
+        let end = if end_str == "+" {
+            (i64::MAX, Some(i64::MAX)) // Special case for "+" which represents the maximum ID
+        } else {
+            parse_bound(&end_str)?
+        };
 
         Ok(RedisCommand::XRange(key, start, end))
     }
@@ -696,6 +700,25 @@ mod tests {
                 assert_eq!(key, "mystream");
                 assert_eq!(start, (0, Some(0)));
                 assert_eq!(end, (67890, None));
+            }
+            _ => panic!("Expected XRANGE command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_xrange_to_max() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("XRANGE".to_string()),
+            RedisValue::BulkString("mystream".to_string()),
+            RedisValue::BulkString("12345".to_string()),
+            RedisValue::BulkString("+".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::XRange(key, start, end) => {
+                assert_eq!(key, "mystream");
+                assert_eq!(start, (12345, None));
+                assert_eq!(end, (i64::MAX, Some(i64::MAX)));
             }
             _ => panic!("Expected XRANGE command"),
         }

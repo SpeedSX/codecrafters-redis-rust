@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use codecrafters_redis::storage::Storage;
+use codecrafters_redis::storage::{BoundType, Storage};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -59,9 +59,7 @@ fn bench_lrange(c: &mut Criterion) {
             group.bench_with_input(id, &size, |b, _| {
                 let storage = storage.clone();
                 b.to_async(&rt).iter(|| async {
-                    let result = storage
-                        .get_list_range("bench-list", start, end)
-                        .await;
+                    let result = storage.get_list_range("bench-list", start, end).await;
                     std::hint::black_box(result)
                 });
             });
@@ -79,8 +77,8 @@ fn bench_xrange(c: &mut Criterion) {
     const DATASET_SIZES: &[usize] = &[100, 1_000, 10_000];
 
     // Min/max bounds for a full-range XRANGE (same as "-" / "+" in RESP)
-    let min_bound = (0_i64, Some(0_i64));
-    let max_bound = (i64::MAX, Some(i64::MAX));
+    let min_bound = (0_i64, Some(0_i64), BoundType::Inclusive);
+    let max_bound = (i64::MAX, Some(i64::MAX), BoundType::Inclusive);
 
     let mut group = c.benchmark_group("xrange");
     group.sample_size(50);
@@ -95,7 +93,7 @@ fn bench_xrange(c: &mut Criterion) {
             let storage = storage.clone();
             b.to_async(&rt).iter(|| async {
                 let result = storage
-                    .with_stream_range("bench-stream", min_bound, max_bound, |entries| {
+                    .with_stream_range("bench-stream", &min_bound, &max_bound, |entries| {
                         entries.count()
                     })
                     .await;

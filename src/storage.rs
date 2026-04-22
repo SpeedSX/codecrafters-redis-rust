@@ -340,7 +340,7 @@ impl Storage {
                 }
             }
             BoundType::Exclusive => {
-                if id <= start_id.0 || (id == start_id.0 && seq <= start_id.1.unwrap_or(0)) {
+                if id < start_id.0 || (id == start_id.0 && seq <= start_id.1.unwrap_or(0)) {
                     return false;
                 }
             }
@@ -352,7 +352,7 @@ impl Storage {
                 }
             }
             BoundType::Exclusive => {
-                if id >= end_id.0 || (id == end_id.0 && seq >= end_id.1.unwrap_or(i64::MAX)) {
+                if id > end_id.0 || (id == end_id.0 && seq >= end_id.1.unwrap_or(i64::MAX)) {
                     return false;
                 }
             }
@@ -363,8 +363,8 @@ impl Storage {
     pub async fn with_stream_range<T, F>(
         &self,
         key: &str,
-        start_id: StreamRangeBound,
-        end_id: StreamRangeBound,
+        start_id: &StreamRangeBound,
+        end_id: &StreamRangeBound,
         f: F,
     ) -> Option<T>
     where
@@ -374,11 +374,9 @@ impl Storage {
         if let Some(item) = data.get(key)
             && let ItemValue::Stream(stream) = &item.value
         {
-            let mut entries = stream
-                .iter()
-                .filter(|((id, seq), _)| {
-                    Self::is_stream_item_in_range(*id, *seq, &start_id, &end_id)
-                });
+            let mut entries = stream.iter().filter(|((id, seq), _)| {
+                Self::is_stream_item_in_range(*id, *seq, start_id, end_id)
+            });
             return Some(f(&mut entries));
         }
         None

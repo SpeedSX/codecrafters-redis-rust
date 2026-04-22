@@ -115,9 +115,7 @@ async fn seed_stream(addr: &str, key: &str, size: usize) -> std::io::Result<()> 
         let batch_end = (sent + PIPELINE).min(size);
         // Pipeline PIPELINE XADD commands
         let mut pipeline = String::new();
-        let ids: Vec<String> = (sent..batch_end)
-            .map(|i| format!("{}-0", i + 1))
-            .collect();
+        let ids: Vec<String> = (sent..batch_end).map(|i| format!("{}-0", i + 1)).collect();
         let vals: Vec<String> = (sent..batch_end).map(|i| format!("{i}")).collect();
         for (id, val) in ids.iter().zip(vals.iter()) {
             pipeline.push_str(&resp_cmd(&["XADD", key, id, "v", val]));
@@ -214,7 +212,12 @@ async fn run_scenario(
     measure_duration: Duration,
     warmup_duration: Duration,
 ) -> std::io::Result<Stats> {
-    let key = format!("{}-{}-{}", scenario.command.to_lowercase(), scenario.dataset_size, scenario.client_count);
+    let key = format!(
+        "{}-{}-{}",
+        scenario.command.to_lowercase(),
+        scenario.dataset_size,
+        scenario.client_count
+    );
 
     // Seed
     del_key(addr, &key).await?;
@@ -240,11 +243,8 @@ async fn run_scenario(
     {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_clone = stop.clone();
-        let warmup_handle = tokio::spawn(run_client(
-            addr.to_string(),
-            cmd_frame.clone(),
-            stop_clone,
-        ));
+        let warmup_handle =
+            tokio::spawn(run_client(addr.to_string(), cmd_frame.clone(), stop_clone));
         sleep(warmup_duration).await;
         stop.store(true, Ordering::Relaxed);
         let _ = warmup_handle.await;
@@ -303,7 +303,10 @@ fn print_row(scenario: &Scenario, stats: &Stats) {
 }
 
 fn write_csv_header(file: &mut File) -> std::io::Result<()> {
-    writeln!(file, "command,dataset_size,clients,ops_per_sec,p50_us,p95_us,p99_us")
+    writeln!(
+        file,
+        "command,dataset_size,clients,ops_per_sec,p50_us,p95_us,p99_us"
+    )
 }
 
 fn write_csv_row(file: &mut File, scenario: &Scenario, stats: &Stats) -> std::io::Result<()> {
@@ -351,7 +354,11 @@ async fn main() {
         for cmd in ["LRANGE", "XRANGE"] {
             for &ds in &[1_000usize, 10_000, 50_000] {
                 for &cc in &[1usize, 10, 50] {
-                    v.push(Scenario { command: cmd, dataset_size: ds, client_count: cc });
+                    v.push(Scenario {
+                        command: cmd,
+                        dataset_size: ds,
+                        client_count: cc,
+                    });
                 }
             }
         }
@@ -359,7 +366,11 @@ async fn main() {
     };
 
     println!("\nRedis Load Test  —  server: {addr}");
-    println!("Measurement: {duration_secs}s/scenario  |  Warmup: 2s  |  Scenarios: {}", scenarios.len(), duration_secs = duration_secs());
+    println!(
+        "Measurement: {duration_secs}s/scenario  |  Warmup: 2s  |  Scenarios: {}",
+        scenarios.len(),
+        duration_secs = duration_secs()
+    );
     println!("CSV output: {csv_path}\n");
     print_header();
 
@@ -367,8 +378,7 @@ async fn main() {
         match run_scenario(&scenario, &addr, duration, warmup).await {
             Ok(stats) => {
                 print_row(scenario, &stats);
-                write_csv_row(&mut csv_file, scenario, &stats)
-                    .expect("failed to write CSV row");
+                write_csv_row(&mut csv_file, scenario, &stats).expect("failed to write CSV row");
                 csv_file.flush().expect("failed to flush CSV");
             }
             Err(e) => {

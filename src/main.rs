@@ -203,53 +203,65 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
             .map(|(id, seq)| RedisValue::BulkString(format!("{id}-{seq}"))),
 
         RedisCommand::XRange(key, start, end) => storage
-            .with_stream_range(&key, (start.0, start.1, BoundType::Inclusive), (end.0, end.1, BoundType::Inclusive), |entries| {
-                RedisValue::Array(
-                    entries
-                        .into_iter()
-                        .map(|((id, seq), kv_array)| {
-                            let entry_vec = vec![
-                                RedisValue::BulkString(format!("{id}-{seq}")),
-                                RedisValue::Array(
-                                    kv_array
-                                        .iter()
-                                        .flat_map(|tup| [&tup.0, &tup.1])
-                                        .map(|s| RedisValue::BulkString(s.clone()))
-                                        .collect(),
-                                ),
-                            ];
-                            RedisValue::Array(entry_vec)
-                        })
-                        .collect(),
-                )
-            })
+            .with_stream_range(
+                &key,
+                &(start.0, start.1, BoundType::Inclusive),
+                &(end.0, end.1, BoundType::Inclusive),
+                |entries| {
+                    RedisValue::Array(
+                        entries
+                            .into_iter()
+                            .map(|((id, seq), kv_array)| {
+                                let entry_vec = vec![
+                                    RedisValue::BulkString(format!("{id}-{seq}")),
+                                    RedisValue::Array(
+                                        kv_array
+                                            .iter()
+                                            .flat_map(|tup| [&tup.0, &tup.1])
+                                            .map(|s| RedisValue::BulkString(s.clone()))
+                                            .collect(),
+                                    ),
+                                ];
+                                RedisValue::Array(entry_vec)
+                            })
+                            .collect(),
+                    )
+                },
+            )
             .await
             .ok_or(RedisError::GenericError),
 
         RedisCommand::XReadStreams(key, start) => storage
-            .with_stream_range(&key, (start.0, start.1, BoundType::Exclusive), (i64::MAX, Some(i64::MAX), BoundType::Inclusive), |entries| {
-                RedisValue::Array(
-                    entries
-                        .into_iter()
-                        .map(|((id, seq), kv_array)| {
-                            let entry_vec = vec![
-                                RedisValue::BulkString(format!("{id}-{seq}")),
-                                RedisValue::Array(
-                                    kv_array
-                                        .iter()
-                                        .flat_map(|tup| [&tup.0, &tup.1])
-                                        .map(|s| RedisValue::BulkString(s.clone()))
-                                        .collect(),
-                                ),
-                            ];
-                            RedisValue::Array(entry_vec)
-                        })
-                        .collect(),
-                )
-            })
+            .with_stream_range(
+                &key,
+                &(start.0, start.1, BoundType::Exclusive),
+                &(i64::MAX, Some(i64::MAX), BoundType::Inclusive),
+                |entries| {
+                    RedisValue::Array(vec![RedisValue::Array(vec![
+                        RedisValue::BulkString(key.clone()),
+                        RedisValue::Array(
+                            entries
+                                .into_iter()
+                                .map(|((id, seq), kv_array)| {
+                                    let entry_vec = vec![
+                                        RedisValue::BulkString(format!("{id}-{seq}")),
+                                        RedisValue::Array(
+                                            kv_array
+                                                .iter()
+                                                .flat_map(|tup| [&tup.0, &tup.1])
+                                                .map(|s| RedisValue::BulkString(s.clone()))
+                                                .collect(),
+                                        ),
+                                    ];
+                                    RedisValue::Array(entry_vec)
+                                })
+                                .collect(),
+                        ),
+                    ])])
+                },
+            )
             .await
             .ok_or(RedisError::GenericError),
-
     }
 }
 
@@ -855,15 +867,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_response_xread_streams() {
+    async fn test_get_response_xread_streams_inclusive() {
         let storage = Arc::new(Storage::new());
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
             (Some(1), Some(0)),
             vec![("field1".to_string(), "value1".to_string())],
         );
-
         get_response(xadd_cmd1, &storage).await.unwrap();
+
         let xadd_cmd1 = RedisCommand::XAdd(
             "mystream".to_string(),
             (Some(2), Some(1)),
@@ -882,22 +894,53 @@ mod tests {
         let response = get_response(xreadstreams_cmd, &storage).await.unwrap();
         assert_eq!(
             response,
-            RedisValue::Array(vec![
+            RedisValue::Array(vec![RedisValue::Array(vec![
+                RedisValue::BulkString("mystream".to_string()),
                 RedisValue::Array(vec![
-                    RedisValue::BulkString("2-1".to_string()),
                     RedisValue::Array(vec![
-                        RedisValue::BulkString("field2".to_string()),
-                        RedisValue::BulkString("value2".to_string())
-                    ])
-                ]),
-                RedisValue::Array(vec![
-                    RedisValue::BulkString("3-0".to_string()),
+                        RedisValue::BulkString("2-1".to_string()),
+                        RedisValue::Array(vec![
+                            RedisValue::BulkString("field2".to_string()),
+                            RedisValue::BulkString("value2".to_string())
+                        ])
+                    ]),
                     RedisValue::Array(vec![
-                        RedisValue::BulkString("field3".to_string()),
-                        RedisValue::BulkString("value3".to_string())
+                        RedisValue::BulkString("3-0".to_string()),
+                        RedisValue::Array(vec![
+                            RedisValue::BulkString("field3".to_string()),
+                            RedisValue::BulkString("value3".to_string())
+                        ])
                     ])
                 ])
-            ]),
+            ])]),
+            "Expected XReadStreams to return both entries in the stream with IDs greater than '1-0'"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_response_xread_streams_from_zero() {
+        let storage = Arc::new(Storage::new());
+        let xadd_cmd1 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            (Some(0), Some(1)),
+            vec![("field1".to_string(), "value1".to_string())],
+        );
+        get_response(xadd_cmd1, &storage).await.unwrap();
+
+        let xreadstreams_cmd = RedisCommand::XReadStreams("mystream".to_string(), (0, Some(0)));
+        let response = get_response(xreadstreams_cmd, &storage).await.unwrap();
+        assert_eq!(
+            response,
+            RedisValue::Array(vec![RedisValue::Array(vec![
+                RedisValue::BulkString("mystream".to_string()),
+                RedisValue::Array(vec![RedisValue::Array(vec![
+                    RedisValue::BulkString("0-1".to_string()),
+                    RedisValue::Array(vec![
+                        RedisValue::BulkString("field1".to_string()),
+                        RedisValue::BulkString("value1".to_string())
+                    ])
+                ])])
+            ])]),
             "Expected XReadStreams to return both entries in the stream with IDs greater than '1-0'"
         );
     }

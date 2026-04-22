@@ -20,7 +20,13 @@ pub enum RedisError {
     InvalidStreamID,
 }
 
-type StreamItem = (i64, i64, Vec<(String, String)>);
+type StreamItemId = (i64, i64); // (id, seq)
+type StreamItem = (StreamItemId, Vec<(String, String)>);
+pub enum BoundType {
+    Inclusive,
+    Exclusive,
+}
+pub type StreamRangeBound = (i64, Option<i64>, BoundType);
 
 enum ItemValue {
     String(String),
@@ -272,7 +278,7 @@ impl Storage {
         id: Option<i64>,
         seq: Option<i64>,
         kv_array: Vec<(String, String)>,
-    ) -> Result<(i64, i64), RedisError> {
+    ) -> Result<StreamItemId, RedisError> {
         if id.unwrap_or(0) < 0 || seq.unwrap_or(0) < 0 || (id.unwrap_or(0) == 0 && seq == Some(0)) {
             return Err(RedisError::InvalidStreamID);
         }
@@ -293,7 +299,7 @@ impl Storage {
 
         if let ItemValue::Stream(stream) = &mut storage_item.value {
             let actual_seq: i64;
-            if let Some((last_id, last_seq, _)) = stream.back() {
+            if let Some(((last_id, last_seq), _)) = stream.back() {
                 // Existing stream
                 actual_seq = seq.unwrap_or(if actual_id == *last_id {
                     *last_seq + 1
@@ -309,38 +315,71 @@ impl Storage {
                 actual_seq = seq.unwrap_or(if actual_id == 0 { 1 } else { 0 });
             }
 
-            stream.push_back((actual_id, actual_seq, kv_array));
+            stream.push_back(((actual_id, actual_seq), kv_array));
             Ok((actual_id, actual_seq))
         } else {
             // If the key exists but is not a stream, we can choose to overwrite it or ignore the command.
             // Here, we choose to overwrite it with a new stream containing the element.
             let actual_seq = seq.unwrap_or(if actual_id == 0 { 1 } else { 0 });
             storage_item.value =
-                ItemValue::Stream(VecDeque::from(vec![(actual_id, actual_seq, kv_array)]));
+                ItemValue::Stream(VecDeque::from(vec![((actual_id, actual_seq), kv_array)]));
             Ok((actual_id, actual_seq))
         }
     }
 
-    pub async fn get_stream_range(
+    fn is_stream_item_in_range(
+        id: i64,
+        seq: i64,
+        start_id: &StreamRangeBound,
+        end_id: &StreamRangeBound,
+    ) -> bool {
+        match start_id.2 {
+            BoundType::Inclusive => {
+                if id < start_id.0 || (id == start_id.0 && seq < start_id.1.unwrap_or(0)) {
+                    return false;
+                }
+            }
+            BoundType::Exclusive => {
+                if id <= start_id.0 || (id == start_id.0 && seq <= start_id.1.unwrap_or(0)) {
+                    return false;
+                }
+            }
+        }
+        match end_id.2 {
+            BoundType::Inclusive => {
+                if id > end_id.0 || (id == end_id.0 && seq > end_id.1.unwrap_or(i64::MAX)) {
+                    return false;
+                }
+            }
+            BoundType::Exclusive => {
+                if id >= end_id.0 || (id == end_id.0 && seq >= end_id.1.unwrap_or(i64::MAX)) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    pub async fn with_stream_range<T, F>(
         &self,
         key: &str,
-        start_id: (i64, Option<i64>),
-        end_id: (i64, Option<i64>),
-    ) -> Option<Vec<(i64, i64, Vec<(String, String)>)>> {
+        start_id: StreamRangeBound,
+        end_id: StreamRangeBound,
+        f: F,
+    ) -> Option<T>
+    where
+        F: for<'a> FnOnce(&mut dyn Iterator<Item = &'a StreamItem>) -> T,
+    {
         let data = self.data.read().await;
         if let Some(item) = data.get(key)
             && let ItemValue::Stream(stream) = &item.value
         {
-            let result = stream
+            let mut entries = stream
                 .iter()
-                .filter(|(id, seq, _)| {
-                    (*id > start_id.0 || (*id == start_id.0 && *seq >= start_id.1.unwrap_or(0)))
-                        && (*id < end_id.0
-                            || (*id == end_id.0 && *seq <= end_id.1.unwrap_or(i64::MAX)))
-                })
-                .cloned()
-                .collect();
-            return Some(result);
+                .filter(|((id, seq), _)| {
+                    Self::is_stream_item_in_range(*id, *seq, &start_id, &end_id)
+                });
+            return Some(f(&mut entries));
         }
         None
     }

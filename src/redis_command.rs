@@ -19,8 +19,8 @@ pub enum RedisCommandParseError {
     Command(#[from] RedisCommandError),
 }
 
-type StreamId = (Option<i64>, Option<i64>); // (timestamp, sequence number)
-type StreamRangeBound = (i64, Option<i64>);
+type CommandStreamItemId = (Option<i64>, Option<i64>); // (timestamp, sequence number)
+type CommandStreamRangeBound = (i64, Option<i64>);
 
 #[derive(Debug)]
 pub enum RedisCommand {
@@ -35,8 +35,9 @@ pub enum RedisCommand {
     LPop(String, Option<i64>),
     BLPop(String, i64),
     Type(String),
-    XAdd(String, StreamId, Vec<(String, String)>),
-    XRange(String, StreamRangeBound, StreamRangeBound),
+    XAdd(String, CommandStreamItemId, Vec<(String, String)>),
+    XRange(String, CommandStreamRangeBound, CommandStreamRangeBound),
+    XReadStreams(String, CommandStreamRangeBound),
 }
 
 impl RedisCommand {
@@ -250,38 +251,53 @@ impl RedisCommand {
         let start_str = iter.require_bulk_string()?;
         let end_str = iter.require_bulk_string()?;
 
-        let parse_bound = |s: &str| -> Result<(i64, Option<i64>), RedisCommandError> {
-            let parts = s.split('-').collect::<Vec<&str>>();
-            if parts.len() == 1 {
-                let timestamp = parts[0]
-                    .parse::<i64>()
-                    .map_err(|_| RedisCommandError::Invalid)?;
-                Ok((timestamp, None))
-            } else if parts.len() == 2 {
-                let timestamp = parts[0]
-                    .parse::<i64>()
-                    .map_err(|_| RedisCommandError::Invalid)?;
-                let seq = parts[1]
-                    .parse::<i64>()
-                    .map_err(|_| RedisCommandError::Invalid)?;
-                Ok((timestamp, Some(seq)))
-            } else {
-                Err(RedisCommandError::Invalid)
-            }
-        };
-
         let start = if start_str == "-" {
             (0, Some(0)) // Special case for "-" which represents the minimum ID
         } else {
-            parse_bound(&start_str)?
+            Self::parse_bound(&start_str)?
         };
         let end = if end_str == "+" {
             (i64::MAX, Some(i64::MAX)) // Special case for "+" which represents the maximum ID
         } else {
-            parse_bound(&end_str)?
+            Self::parse_bound(&end_str)?
         };
 
         Ok(RedisCommand::XRange(key, start, end))
+    }
+
+    fn parse_xread_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let source = iter.require_bulk_string()?;
+        if source.to_uppercase() == "STREAMS" {
+            let key = iter.require_bulk_string()?;
+            let start_str = iter.require_bulk_string()?;
+            let start = Self::parse_bound(&start_str)?;
+            return Ok(RedisCommand::XReadStreams(key, start));
+        } else {
+            return Err(RedisCommandError::Invalid);
+        }
+    }
+
+    fn parse_bound(s: &str) -> Result<(i64, Option<i64>), RedisCommandError> {
+        let parts = s.split('-').collect::<Vec<&str>>();
+        if parts.len() == 1 {
+            let timestamp = parts[0]
+                .parse::<i64>()
+                .map_err(|_| RedisCommandError::Invalid)?;
+            Ok((timestamp, None))
+        } else if parts.len() == 2 {
+            let timestamp = parts[0]
+                .parse::<i64>()
+                .map_err(|_| RedisCommandError::Invalid)?;
+            let seq = parts[1]
+                .parse::<i64>()
+                .map_err(|_| RedisCommandError::Invalid)?;
+            Ok((timestamp, Some(seq)))
+        } else {
+            Err(RedisCommandError::Invalid)
+        }
     }
 }
 
@@ -324,6 +340,8 @@ impl TryFrom<&RedisValue> for RedisCommand {
                     "XADD" => RedisCommand::parse_xadd_command(iter),
 
                     "XRANGE" => RedisCommand::parse_xrange_command(iter),
+
+                    "XREAD" => RedisCommand::parse_xread_command(iter),
 
                     _ => Err(RedisCommandError::Invalid),
                 }
@@ -721,6 +739,24 @@ mod tests {
                 assert_eq!(end, (i64::MAX, Some(i64::MAX)));
             }
             _ => panic!("Expected XRANGE command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_xread_streams() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("XREAD".to_string()),
+            RedisValue::BulkString("STREAMS".to_string()),
+            RedisValue::BulkString("mystream".to_string()),
+            RedisValue::BulkString("12345".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::XReadStreams(key, start) => {
+                assert_eq!(key, "mystream");
+                assert_eq!(start, (12345, None));
+            }
+            _ => panic!("Expected XREAD STREAMS command"),
         }
     }
 

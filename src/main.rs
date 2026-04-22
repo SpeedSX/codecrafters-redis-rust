@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -14,7 +14,14 @@ use storage::Storage;
 
 mod parsing;
 
-use crate::storage::RedisError;
+use crate::storage::{BoundType, RedisError};
+
+static LOG_STDOUT: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("REDIS_LOG_RECEIVED")
+        .ok()
+        .as_deref()
+        .is_some_and(|value| matches!(value, "1" | "true" | "TRUE" | "True"))
+});
 
 #[tokio::main]
 async fn main() {
@@ -26,11 +33,14 @@ async fn main() {
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                println!("Accepted connection from {addr}");
+                if *LOG_STDOUT {
+                    println!("Accepted connection from {addr}");
+                }
+
                 tokio::spawn(handle_connection(stream, storage.clone()));
             }
             Err(e) => {
-                println!("error accepting connection: {e}");
+                eprintln!("error accepting connection: {e}");
             }
         }
     }
@@ -46,7 +56,9 @@ async fn handle_connection(mut stream: TcpStream, storage: Arc<Storage>) {
             Ok(0) => break, // connection closed
             Ok(len) => {
                 accumulator.push_str(&String::from_utf8_lossy(&read_buf[..len]));
-                println!("Received: {accumulator}");
+                if *LOG_STDOUT {
+                    println!("Received: {accumulator}");
+                }
 
                 loop {
                     match RedisValue::parse_with_rest(&accumulator) {
@@ -86,9 +98,11 @@ fn check_result(result: Result<(), std::io::Error>) {
 
 fn log_connection_error(operation: &str, error: &std::io::Error) {
     if is_client_disconnect(error) {
-        println!("connection closed by client during {operation}: {error}");
+        if *LOG_STDOUT {
+            println!("connection closed by client during {operation}: {error}");
+        }
     } else {
-        println!("{operation} error: {error}");
+        eprintln!("{operation} error: {error}");
     }
 }
 
@@ -189,13 +203,11 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
             .map(|(id, seq)| RedisValue::BulkString(format!("{id}-{seq}"))),
 
         RedisCommand::XRange(key, start, end) => storage
-            .get_stream_range(&key, start, end)
-            .await
-            .map(|entries| {
+            .with_stream_range(&key, (start.0, start.1, BoundType::Inclusive), (end.0, end.1, BoundType::Inclusive), |entries| {
                 RedisValue::Array(
                     entries
                         .into_iter()
-                        .map(|(id, seq, kv_array)| {
+                        .map(|((id, seq), kv_array)| {
                             let entry_vec = vec![
                                 RedisValue::BulkString(format!("{id}-{seq}")),
                                 RedisValue::Array(
@@ -211,7 +223,33 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
                         .collect(),
                 )
             })
+            .await
             .ok_or(RedisError::GenericError),
+
+        RedisCommand::XReadStreams(key, start) => storage
+            .with_stream_range(&key, (start.0, start.1, BoundType::Exclusive), (i64::MAX, Some(i64::MAX), BoundType::Inclusive), |entries| {
+                RedisValue::Array(
+                    entries
+                        .into_iter()
+                        .map(|((id, seq), kv_array)| {
+                            let entry_vec = vec![
+                                RedisValue::BulkString(format!("{id}-{seq}")),
+                                RedisValue::Array(
+                                    kv_array
+                                        .iter()
+                                        .flat_map(|tup| [&tup.0, &tup.1])
+                                        .map(|s| RedisValue::BulkString(s.clone()))
+                                        .collect(),
+                                ),
+                            ];
+                            RedisValue::Array(entry_vec)
+                        })
+                        .collect(),
+                )
+            })
+            .await
+            .ok_or(RedisError::GenericError),
+
     }
 }
 
@@ -813,6 +851,54 @@ mod tests {
                 ])
             ]),
             "Expected XRange to return both entries in the stream within the specified range"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_response_xread_streams() {
+        let storage = Arc::new(Storage::new());
+        let xadd_cmd1 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            (Some(1), Some(0)),
+            vec![("field1".to_string(), "value1".to_string())],
+        );
+
+        get_response(xadd_cmd1, &storage).await.unwrap();
+        let xadd_cmd1 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            (Some(2), Some(1)),
+            vec![("field2".to_string(), "value2".to_string())],
+        );
+        get_response(xadd_cmd1, &storage).await.unwrap();
+
+        let xadd_cmd2 = RedisCommand::XAdd(
+            "mystream".to_string(),
+            (Some(3), Some(0)),
+            vec![("field3".to_string(), "value3".to_string())],
+        );
+        get_response(xadd_cmd2, &storage).await.unwrap();
+
+        let xreadstreams_cmd = RedisCommand::XReadStreams("mystream".to_string(), (1, Some(0)));
+        let response = get_response(xreadstreams_cmd, &storage).await.unwrap();
+        assert_eq!(
+            response,
+            RedisValue::Array(vec![
+                RedisValue::Array(vec![
+                    RedisValue::BulkString("2-1".to_string()),
+                    RedisValue::Array(vec![
+                        RedisValue::BulkString("field2".to_string()),
+                        RedisValue::BulkString("value2".to_string())
+                    ])
+                ]),
+                RedisValue::Array(vec![
+                    RedisValue::BulkString("3-0".to_string()),
+                    RedisValue::Array(vec![
+                        RedisValue::BulkString("field3".to_string()),
+                        RedisValue::BulkString("value3".to_string())
+                    ])
+                ])
+            ]),
+            "Expected XReadStreams to return both entries in the stream with IDs greater than '1-0'"
         );
     }
 

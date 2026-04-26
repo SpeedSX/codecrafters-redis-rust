@@ -26,6 +26,13 @@ pub trait Parse<'a>: Iterator<Item = &'a RedisValue> {
         }
     }
 
+    fn match_bulk_string(&mut self) -> Option<String> {
+        match self.next() {
+            Some(RedisValue::BulkString(s)) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
     fn match_int_arg(&mut self) -> Result<Option<i64>, RedisCommandError> {
         match self.next() {
             Some(RedisValue::BulkString(s)) => s

@@ -28,6 +28,7 @@ pub enum BoundType {
 }
 pub type StreamRangeBound = (i64, Option<i64>, BoundType);
 
+#[allow(dead_code)]
 enum ItemValue {
     String(String),
     List(VecDeque<String>),
@@ -45,6 +46,12 @@ struct Item {
 pub struct Storage {
     data: RwLock<HashMap<String, Item>>,
     list_append_notify: Mutex<HashMap<String, Arc<Notify>>>,
+}
+
+impl Default for Storage {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Storage {

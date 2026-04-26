@@ -1,3 +1,5 @@
+use std::vec;
+
 use thiserror::Error;
 
 use crate::{
@@ -37,7 +39,7 @@ pub enum RedisCommand {
     Type(String),
     XAdd(String, CommandStreamItemId, Vec<(String, String)>),
     XRange(String, CommandStreamRangeBound, CommandStreamRangeBound),
-    XReadStreams(String, CommandStreamRangeBound),
+    XReadStreams(Vec<(String, CommandStreamRangeBound)>),
 }
 
 impl RedisCommand {
@@ -271,12 +273,37 @@ impl RedisCommand {
     {
         let source = iter.require_bulk_string()?;
         if source.to_uppercase() == "STREAMS" {
-            let key = iter.require_bulk_string()?;
-            let start_str = iter.require_bulk_string()?;
-            let start = Self::parse_bound(&start_str)?;
-            return Ok(RedisCommand::XReadStreams(key, start));
+            let mut keys = vec![];
+            let mut start_ids = vec![];
+
+            let key = iter.require_bulk_string()?; // require at least one key-ID pair
+            keys.push(key);
+
+            while let Some(next) = iter.match_bulk_string() {
+                if let Ok(start_id) = Self::parse_bound(&next) {
+                    // if a valid start ID is found, it means we've reached the start of the ID list
+                    start_ids.push(start_id);
+                    while start_ids.len() < keys.len() {
+                        if let Some(next) = iter.match_bulk_string() {
+                            start_ids.push(Self::parse_bound(&next)?);
+                        } else {
+                            break;
+                        }
+                    }
+                    break;
+                } else {
+                    keys.push(next);
+                }
+            }
+
+            if keys.len() != start_ids.len() {
+                return Err(RedisCommandError::Invalid);
+            }
+
+            let kv = keys.into_iter().zip(start_ids.into_iter()).collect();
+            Ok(RedisCommand::XReadStreams(kv))
         } else {
-            return Err(RedisCommandError::Invalid);
+            Err(RedisCommandError::Invalid)
         }
     }
 
@@ -752,9 +779,33 @@ mod tests {
         ]);
         let cmd = RedisCommand::try_from(&value).unwrap();
         match cmd {
-            RedisCommand::XReadStreams(key, start) => {
-                assert_eq!(key, "mystream");
-                assert_eq!(start, (12345, None));
+            RedisCommand::XReadStreams(kv) => {
+                assert_eq!(kv.len(), 1);
+                assert_eq!(kv[0].0, "mystream");
+                assert_eq!(kv[0].1, (12345, None));
+            }
+            _ => panic!("Expected XREAD STREAMS command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_xread_streams_multiple() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("XREAD".to_string()),
+            RedisValue::BulkString("STREAMS".to_string()),
+            RedisValue::BulkString("mystream1".to_string()),
+            RedisValue::BulkString("mystream2".to_string()),
+            RedisValue::BulkString("12345".to_string()),
+            RedisValue::BulkString("67890".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::XReadStreams(kv) => {
+                assert_eq!(kv.len(), 2);
+                assert_eq!(kv[0].0, "mystream1");
+                assert_eq!(kv[0].1, (12345, None));
+                assert_eq!(kv[1].0, "mystream2");
+                assert_eq!(kv[1].1, (67890, None));
             }
             _ => panic!("Expected XREAD STREAMS command"),
         }

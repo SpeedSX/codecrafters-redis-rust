@@ -375,7 +375,7 @@ async fn main() {
     print_header();
 
     for scenario in &scenarios {
-        match run_scenario(&scenario, &addr, duration, warmup).await {
+        match run_scenario(scenario, &addr, duration, warmup).await {
             Ok(stats) => {
                 print_row(scenario, &stats);
                 write_csv_row(&mut csv_file, scenario, &stats).expect("failed to write CSV row");

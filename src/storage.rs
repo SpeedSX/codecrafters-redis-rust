@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    future::Future,
     sync::Arc,
     time::Duration,
 };
@@ -46,6 +47,7 @@ struct Item {
 pub struct Storage {
     data: RwLock<HashMap<String, Item>>,
     list_append_notify: Mutex<HashMap<String, Arc<Notify>>>,
+    stream_append_notify: Notify,
 }
 
 impl Default for Storage {
@@ -59,6 +61,20 @@ impl Storage {
         Storage {
             data: RwLock::new(HashMap::new()),
             list_append_notify: Mutex::new(HashMap::new()),
+            stream_append_notify: Notify::new(),
+        }
+    }
+
+    async fn run_with_optional_timeout<T, F>(&self, timeout: u64, future: F) -> Option<T>
+    where
+        F: Future<Output = T>,
+    {
+        if timeout == 0 {
+            Some(future.await)
+        } else {
+            tokio::time::timeout(Duration::from_millis(timeout), future)
+                .await
+                .ok()
         }
     }
 
@@ -211,7 +227,7 @@ impl Storage {
     pub async fn pop_list_front_with_timeout(
         &self,
         list_key: &str,
-        timeout: i64,
+        timeout: u64,
     ) -> Option<String> {
         let future = async {
             loop {
@@ -228,17 +244,23 @@ impl Storage {
             }
         };
 
-        if timeout <= 0 {
-            return future.await;
-        }
+        self.run_with_optional_timeout(timeout, future).await.flatten()
+    }
 
-        tokio::time::timeout(
-            std::time::Duration::from_millis(timeout.cast_unsigned()),
-            future,
-        )
-        .await
-        .ok()
-        .flatten()
+    pub async fn wait_for_stream_append_with_timeout(&self, timeout: u64) -> bool {
+        self.run_with_optional_timeout(timeout, self.stream_append_notify.notified())
+            .await
+            .is_some()
+    }
+
+    pub async fn get_stream_last_id(&self, key: &str) -> Option<StreamItemId> {
+        let data = self.data.read().await;
+        if let Some(item) = data.get(key)
+            && let ItemValue::Stream(stream) = &item.value
+        {
+            return stream.back().map(|((id, seq), _)| (*id, *seq));
+        }
+        None
     }
 
     pub async fn pop_list_front_n(&self, list_key: &str, count: i64) -> Option<Vec<String>> {
@@ -323,6 +345,7 @@ impl Storage {
             }
 
             stream.push_back(((actual_id, actual_seq), kv_array));
+            self.stream_append_notify.notify_waiters();
             Ok((actual_id, actual_seq))
         } else {
             // If the key exists but is not a stream, we can choose to overwrite it or ignore the command.
@@ -330,6 +353,7 @@ impl Storage {
             let actual_seq = seq.unwrap_or(if actual_id == 0 { 1 } else { 0 });
             storage_item.value =
                 ItemValue::Stream(VecDeque::from(vec![((actual_id, actual_seq), kv_array)]));
+            self.stream_append_notify.notify_waiters();
             Ok((actual_id, actual_seq))
         }
     }

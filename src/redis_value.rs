@@ -32,6 +32,10 @@ impl RedisValue {
         match s.chars().next().ok_or(RedisParseError::Incomplete)? {
             '*' => {
                 let (len_str, mut rest) = Self::read_next_value_str(s)?;
+                if len_str == "-1" {
+                    return Ok((RedisValue::NullArray, rest));
+                }
+
                 let len = len_str
                     .parse::<usize>()
                     .map_err(|_| RedisParseError::Protocol)?;
@@ -141,6 +145,13 @@ mod tests {
     #[test]
     fn parse_null_bulk_string() {
         let input = "$-1\r\n";
+        let value = RedisValue::parse(input).unwrap();
+        assert_eq!(value.to_string(), input);
+    }
+
+    #[test]
+    fn parse_null_array() {
+        let input = "*-1\r\n";
         let value = RedisValue::parse(input).unwrap();
         assert_eq!(value.to_string(), input);
     }

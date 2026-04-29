@@ -17,6 +17,15 @@ pub trait Parse<'a>: Iterator<Item = &'a RedisValue> {
         }
     }
 
+    fn require_uint_arg(&mut self) -> Result<u64, RedisCommandError> {
+        match self.next() {
+            Some(RedisValue::BulkString(s)) => {
+                s.parse::<u64>().map_err(|_| RedisCommandError::Invalid)
+            }
+            _ => Err(RedisCommandError::Invalid),
+        }
+    }
+
     fn require_float_arg(&mut self) -> Result<f64, RedisCommandError> {
         match self.next() {
             Some(RedisValue::BulkString(s)) => {

@@ -1,13 +1,14 @@
-use std::sync::{Arc, LazyLock};
+use std::{sync::{Arc, LazyLock}, time::Duration};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::Instant;
 
 mod redis_value;
 use redis_value::{RedisParseError, RedisValue};
 
 mod redis_command;
-use redis_command::RedisCommand;
+use redis_command::{CommandStreamReadBound, RedisCommand};
 
 mod storage;
 use storage::Storage;
@@ -106,6 +107,27 @@ fn log_connection_error(operation: &str, error: &std::io::Error) {
     }
 }
 
+fn map_stream_entries<'a>(
+    entries: &mut dyn Iterator<Item = &'a ((i64, i64), Vec<(String, String)>)>,
+) -> RedisValue {
+    RedisValue::Array(
+        entries
+            .map(|((id, seq), kv_array)| {
+                RedisValue::Array(vec![
+                    RedisValue::BulkString(format!("{id}-{seq}")),
+                    RedisValue::Array(
+                        kv_array
+                            .iter()
+                            .flat_map(|tup| [&tup.0, &tup.1])
+                            .map(|s| RedisValue::BulkString(s.clone()))
+                            .collect(),
+                    ),
+                ])
+            })
+            .collect(),
+    )
+}
+
 fn is_client_disconnect(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -113,6 +135,71 @@ fn is_client_disconnect(error: &std::io::Error) -> bool {
             | std::io::ErrorKind::ConnectionAborted
             | std::io::ErrorKind::BrokenPipe
     )
+}
+
+async fn resolve_xread_streams(
+    storage: &Arc<Storage>,
+    streams: Vec<(String, CommandStreamReadBound)>,
+) -> Vec<(String, (i64, Option<i64>))> {
+    let mut resolved = Vec::with_capacity(streams.len());
+
+    for (stream_key, bound) in streams {
+        let bound = match bound {
+            CommandStreamReadBound::Id(id, seq) => (id, seq),
+            CommandStreamReadBound::Last => storage
+                .get_stream_last_id(&stream_key)
+                .await
+                .map_or((0, Some(0)), |(id, seq)| (id, Some(seq))),
+        };
+
+        resolved.push((stream_key, bound));
+    }
+
+    resolved
+}
+
+async fn read_xread_streams_once(
+    storage: &Arc<Storage>,
+    streams: &[(String, (i64, Option<i64>))],
+) -> Result<Option<RedisValue>, RedisError> {
+    let mut result = Vec::with_capacity(streams.len());
+
+    for (stream_key, (start_id, start_seq)) in streams {
+        let Some(stream_entries) = storage
+            .with_stream_range(
+                stream_key,
+                &(*start_id, *start_seq, BoundType::Exclusive),
+                &(i64::MAX, Some(i64::MAX), BoundType::Inclusive),
+                |entries| {
+                    RedisValue::Array(vec![
+                        RedisValue::BulkString(stream_key.clone()),
+                        map_stream_entries(entries),
+                    ])
+                },
+            )
+            .await
+        else {
+            // A missing stream is equivalent to an empty stream for XREAD.
+            continue;
+        };
+
+        let has_entries = match &stream_entries {
+            RedisValue::Array(values) => values.get(1).is_some_and(|value| {
+                matches!(value, RedisValue::Array(entries) if !entries.is_empty())
+            }),
+            _ => false,
+        };
+
+        if has_entries {
+            result.push(stream_entries);
+        }
+    }
+
+    if result.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(RedisValue::Array(result)))
+    }
 }
 
 async fn process_command(cmd: RedisCommand, stream: &mut TcpStream, storage: &Arc<Storage>) {
@@ -207,70 +294,48 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
                 &key,
                 &(start.0, start.1, BoundType::Inclusive),
                 &(end.0, end.1, BoundType::Inclusive),
-                |entries| {
-                    RedisValue::Array(
-                        entries
-                            .into_iter()
-                            .map(|((id, seq), kv_array)| {
-                                let entry_vec = vec![
-                                    RedisValue::BulkString(format!("{id}-{seq}")),
-                                    RedisValue::Array(
-                                        kv_array
-                                            .iter()
-                                            .flat_map(|tup| [&tup.0, &tup.1])
-                                            .map(|s| RedisValue::BulkString(s.clone()))
-                                            .collect(),
-                                    ),
-                                ];
-                                RedisValue::Array(entry_vec)
-                            })
-                            .collect(),
-                    )
-                },
+                map_stream_entries,
             )
             .await
             .ok_or(RedisError::GenericError),
 
         RedisCommand::XReadStreams(streams) => {
-            let mut result = Vec::with_capacity(streams.len());
+            let streams = resolve_xread_streams(storage, streams).await;
+            Ok(read_xread_streams_once(storage, &streams)
+                .await?
+                .unwrap_or(RedisValue::NullArray))
+        }
 
-            for (stream_key, (start_id, start_seq)) in streams {
-                let stream_entries = storage
-                    .with_stream_range(
-                        &stream_key,
-                        &(start_id, start_seq, BoundType::Exclusive),
-                        &(i64::MAX, Some(i64::MAX), BoundType::Inclusive),
-                        |entries| {
-                            RedisValue::Array(vec![
-                                RedisValue::BulkString(stream_key.clone()),
-                                RedisValue::Array(
-                                    entries
-                                        .into_iter()
-                                        .map(|((id, seq), kv_array)| {
-                                            let entry_vec = vec![
-                                                RedisValue::BulkString(format!("{id}-{seq}")),
-                                                RedisValue::Array(
-                                                    kv_array
-                                                        .iter()
-                                                        .flat_map(|tup| [&tup.0, &tup.1])
-                                                        .map(|s| RedisValue::BulkString(s.clone()))
-                                                        .collect(),
-                                                ),
-                                            ];
-                                            RedisValue::Array(entry_vec)
-                                        })
-                                        .collect(),
-                                ),
-                            ])
-                        },
-                    )
-                    .await
-                    .ok_or(RedisError::GenericError)?;
+        RedisCommand::XReadBlockStreams(streams, timeout) => {
+            let streams = resolve_xread_streams(storage, streams).await;
+            let deadline = (timeout != 0).then(|| Instant::now() + Duration::from_millis(timeout));
 
-                result.push(stream_entries);
+            loop {
+                if let Some(response) = read_xread_streams_once(storage, &streams).await? {
+                    break Ok(response);
+                }
+
+                let wait_timeout = if let Some(deadline) = deadline {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        break Ok(RedisValue::NullArray);
+                    }
+
+                    let remaining = deadline.duration_since(now).as_millis();
+                    if remaining == 0 {
+                        break Ok(RedisValue::NullArray);
+                    }
+
+                    u64::try_from(remaining).unwrap_or(u64::MAX)
+                } else {
+                    0
+                };
+
+                let notified = storage.wait_for_stream_append_with_timeout(wait_timeout).await;
+                if !notified {
+                    break Ok(RedisValue::NullArray);
+                }
             }
-
-            Ok(RedisValue::Array(result))
         }
     }
 }
@@ -901,7 +966,7 @@ mod tests {
         get_response(xadd_cmd3, &storage).await.unwrap();
 
         let xreadstreams_cmd =
-            RedisCommand::XReadStreams([("mystream".to_string(), (1, Some(0)))].into());
+            RedisCommand::XReadStreams([("mystream".to_string(), CommandStreamReadBound::Id(1, Some(0)))].into());
         let response = get_response(xreadstreams_cmd, &storage).await.unwrap();
         assert_eq!(
             response,
@@ -947,8 +1012,8 @@ mod tests {
 
         let xreadstreams_cmd = RedisCommand::XReadStreams(
             [
-                ("mystream1".to_string(), (1, Some(0))),
-                ("mystream2".to_string(), (2, Some(1))),
+                ("mystream1".to_string(), CommandStreamReadBound::Id(1, Some(0))),
+                ("mystream2".to_string(), CommandStreamReadBound::Id(2, Some(1))),
             ]
             .into(),
         );
@@ -992,7 +1057,7 @@ mod tests {
         get_response(xadd_cmd1, &storage).await.unwrap();
 
         let xreadstreams_cmd =
-            RedisCommand::XReadStreams([("mystream".to_string(), (0, Some(0)))].into());
+            RedisCommand::XReadStreams([("mystream".to_string(), CommandStreamReadBound::Id(0, Some(0)))].into());
         let response = get_response(xreadstreams_cmd, &storage).await.unwrap();
         assert_eq!(
             response,
@@ -1007,6 +1072,76 @@ mod tests {
                 ])])
             ])]),
             "Expected XReadStreams to return both entries in the stream with IDs greater than the specified ID for the stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_response_xread_block_streams_timeout() {
+        let storage = Arc::new(Storage::new());
+
+        let xread_cmd = RedisCommand::XReadBlockStreams(
+            [(
+                "mystream".to_string(),
+                CommandStreamReadBound::Id(0, Some(0)),
+            )]
+            .into(),
+            50,
+        );
+
+        let response = get_response(xread_cmd, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::NullArray);
+    }
+
+    #[tokio::test]
+    async fn test_get_response_xread_block_streams_waits_for_new_entry() {
+        let storage = Arc::new(Storage::new());
+
+        let initial_entry = RedisCommand::XAdd(
+            "mystream".to_string(),
+            (Some(1), Some(0)),
+            vec![("field1".to_string(), "value1".to_string())],
+        );
+        get_response(initial_entry, &storage).await.unwrap();
+
+        let waiting = tokio::spawn({
+            let storage = storage.clone();
+            async move {
+                let cmd = RedisCommand::XReadBlockStreams(
+                    [("mystream".to_string(), CommandStreamReadBound::Last)].into(),
+                    1000,
+                );
+                get_response(cmd, &storage).await.unwrap()
+            }
+        });
+
+        let pushing = tokio::spawn({
+            let storage = storage.clone();
+            async move {
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                let next_entry = RedisCommand::XAdd(
+                    "mystream".to_string(),
+                    (Some(2), Some(0)),
+                    vec![("field2".to_string(), "value2".to_string())],
+                );
+                get_response(next_entry, &storage).await.unwrap();
+            }
+        });
+
+        let (waited_response, _) = tokio::join!(waiting, pushing);
+        let response = waited_response.unwrap();
+
+        assert_eq!(
+            response,
+            RedisValue::Array(vec![RedisValue::Array(vec![
+                RedisValue::BulkString("mystream".to_string()),
+                RedisValue::Array(vec![RedisValue::Array(vec![
+                    RedisValue::BulkString("2-0".to_string()),
+                    RedisValue::Array(vec![
+                        RedisValue::BulkString("field2".to_string()),
+                        RedisValue::BulkString("value2".to_string()),
+                    ]),
+                ])]),
+            ])])
         );
     }
 

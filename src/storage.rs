@@ -19,7 +19,7 @@ pub enum RedisError {
     InvalidStreamIDOrder,
     #[error("The ID specified in XADD must be greater than 0-0")]
     InvalidStreamID,
-    #[error("Value is not an integer or out of range")]
+    #[error("value is not an integer or out of range")]
     InvalidInteger,
 }
 

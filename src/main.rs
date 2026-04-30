@@ -288,11 +288,7 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
         }
 
         RedisCommand::Incr(key) => {
-            let new_value = storage
-                .increment_by_key(&key)
-                .await
-                .map_err(|_| RedisError::GenericError)?;
-            Ok(RedisValue::Integer(new_value))
+            storage.increment_by_key(&key).await.map(RedisValue::Integer)
         }
     }
 }
@@ -303,7 +299,7 @@ async fn write_error_response(
 ) -> Result<(), std::io::Error> {
     match error {
         RedisError::GenericError => write_response(stream, "-ERR\r\n").await,
-        RedisError::InvalidStreamIDOrder | RedisError::InvalidStreamID => {
+        RedisError::InvalidStreamIDOrder | RedisError::InvalidStreamID | RedisError::InvalidInteger => {
             write_response(stream, format!("-ERR {error}\r\n")).await
         }
     }
@@ -1118,19 +1114,31 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_get_response_increment() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let storage = Arc::new(Storage::new());
-            let incr_cmd = RedisCommand::Incr("counter".to_string());
-            let response = get_response(incr_cmd, &storage).await.unwrap();
-            assert_eq!(response, RedisValue::Integer(1));
+    #[tokio::test]
+    async fn test_get_response_increment() {
+        let storage = Arc::new(Storage::new());
+        let incr_cmd = RedisCommand::Incr("counter".to_string());
+        let response = get_response(incr_cmd, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::Integer(1));
 
-            let incr_cmd = RedisCommand::Incr("counter".to_string());
-            let response = get_response(incr_cmd, &storage).await.unwrap();
-            assert_eq!(response, RedisValue::Integer(2));
-        });
+        let incr_cmd = RedisCommand::Incr("counter".to_string());
+        let response = get_response(incr_cmd, &storage).await.unwrap();
+        assert_eq!(response, RedisValue::Integer(2));
+    }
+
+    #[tokio::test]
+    async fn test_get_response_incr_non_integer() {
+        let storage = Arc::new(Storage::new());
+        let set_cmd = RedisCommand::Set("key".to_string(), "value".to_string(), None);
+        get_response(set_cmd, &storage).await.unwrap();
+
+        let incr_cmd = RedisCommand::Incr("key".to_string());
+        let response = get_response(incr_cmd, &storage).await;
+        assert_eq!(
+            response,
+            Err(RedisError::InvalidInteger),
+            "Expected error when trying to increment a non-integer value"
+        );
     }
 
     async fn connect_test_client() -> (tokio::task::JoinHandle<()>, tokio::net::TcpStream) {

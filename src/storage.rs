@@ -19,6 +19,8 @@ pub enum RedisError {
     InvalidStreamIDOrder,
     #[error("The ID specified in XADD must be greater than 0-0")]
     InvalidStreamID,
+    #[error("The value is not an integer or out of range")]
+    InvalidInteger,
 }
 
 pub type StreamItemId = (i64, i64); // (id, seq)
@@ -474,10 +476,13 @@ impl Storage {
         });
 
         if let ItemValue::String(s) = &mut item.value {
-            let current_value = s.parse::<i64>().unwrap_or(0);
-            let new_value = current_value + 1;
-            *s = new_value.to_string();
-            Ok(new_value)
+            if let Ok(current_value) = s.parse::<i64>() {
+                let new_value = current_value + 1;
+                *s = new_value.to_string();
+                Ok(new_value)
+            } else {
+                Err(RedisError::InvalidInteger)
+            }
         } else {
             // If the key exists but is not a string, we can choose to overwrite it or return an error.
             // Here, we choose to overwrite it with "1".

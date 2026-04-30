@@ -286,6 +286,14 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
                 map_xread_raw(raw)
             })
         }
+
+        RedisCommand::Incr(key) => {
+            let new_value = storage
+                .increment_by_key(&key)
+                .await
+                .map_err(|_| RedisError::GenericError)?;
+            Ok(RedisValue::Integer(new_value))
+        }
     }
 }
 
@@ -1108,6 +1116,21 @@ mod tests {
                 ])]),
             ])])
         );
+    }
+
+    #[test]
+    fn test_get_response_increment() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let storage = Arc::new(Storage::new());
+            let incr_cmd = RedisCommand::Incr("counter".to_string());
+            let response = get_response(incr_cmd, &storage).await.unwrap();
+            assert_eq!(response, RedisValue::Integer(1));
+
+            let incr_cmd = RedisCommand::Incr("counter".to_string());
+            let response = get_response(incr_cmd, &storage).await.unwrap();
+            assert_eq!(response, RedisValue::Integer(2));
+        });
     }
 
     async fn connect_test_client() -> (tokio::task::JoinHandle<()>, tokio::net::TcpStream) {

@@ -465,4 +465,24 @@ impl Storage {
         }
         None
     }
+
+    pub async fn increment_by_key(&self, key: &str) -> Result<i64, RedisError> {
+        let mut data = self.data.write().await;
+        let item = data.entry(key.to_string()).or_insert_with(|| Item {
+            value: ItemValue::String("0".to_string()),
+            expire_at: None,
+        });
+
+        if let ItemValue::String(s) = &mut item.value {
+            let current_value = s.parse::<i64>().unwrap_or(0);
+            let new_value = current_value + 1;
+            *s = new_value.to_string();
+            Ok(new_value)
+        } else {
+            // If the key exists but is not a string, we can choose to overwrite it or return an error.
+            // Here, we choose to overwrite it with "1".
+            item.value = ItemValue::String("1".to_string());
+            Ok(1)
+        }
+    }
 }

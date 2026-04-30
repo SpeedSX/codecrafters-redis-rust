@@ -223,7 +223,7 @@ async fn run_scenario(
     del_key(addr, &key).await?;
     match scenario.command {
         "LRANGE" => seed_list(addr, &key, scenario.dataset_size).await?,
-        "XRANGE" => seed_stream(addr, &key, scenario.dataset_size).await?,
+        "XRANGE" | "XREAD" => seed_stream(addr, &key, scenario.dataset_size).await?,
         _ => unreachable!(),
     }
 
@@ -236,6 +236,7 @@ async fn run_scenario(
             &(scenario.dataset_size as i64 - 1).to_string(),
         ]),
         "XRANGE" => resp_cmd(&["XRANGE", &key, "-", "+"]),
+        "XREAD" => resp_cmd(&["XREAD", "STREAMS", &key, "0-0"]),
         _ => unreachable!(),
     };
 
@@ -351,7 +352,7 @@ async fn main() {
 
     let scenarios: Vec<Scenario> = {
         let mut v = Vec::new();
-        for cmd in ["LRANGE", "XRANGE"] {
+        for cmd in ["LRANGE", "XRANGE", "XREAD"] {
             for &ds in &[1_000usize, 10_000, 50_000] {
                 for &cc in &[1usize, 10, 50] {
                     v.push(Scenario {

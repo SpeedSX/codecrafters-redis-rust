@@ -47,6 +47,7 @@ pub enum RedisCommand {
     XRange(String, CommandStreamRangeBound, CommandStreamRangeBound),
     XReadStreams(Vec<(String, CommandStreamReadBound)>),
     XReadBlockStreams(Vec<(String, CommandStreamReadBound)>, u64),
+    Incr(String),
 }
 
 impl RedisCommand {
@@ -320,6 +321,14 @@ impl RedisCommand {
         })
     }
 
+    fn parse_incr_command<'a, I>(mut iter: I) -> Result<RedisCommand, RedisCommandError>
+    where
+        I: Iterator<Item = &'a RedisValue>,
+    {
+        let key = iter.require_bulk_string()?;
+        Ok(RedisCommand::Incr(key))
+    }
+
     fn parse_read_bound(s: &str) -> Result<CommandStreamReadBound, RedisCommandError> {
         if s == "$" {
             return Ok(CommandStreamReadBound::Last);
@@ -391,6 +400,8 @@ impl TryFrom<&RedisValue> for RedisCommand {
                     "XRANGE" => RedisCommand::parse_xrange_command(iter),
 
                     "XREAD" => RedisCommand::parse_xread_command(iter),
+
+                    "INCR" => RedisCommand::parse_incr_command(iter),
 
                     _ => Err(RedisCommandError::Invalid),
                 }
@@ -871,6 +882,21 @@ mod tests {
                 assert_eq!(kv[0].1, CommandStreamReadBound::Last);
             }
             _ => panic!("Expected XREAD STREAMS command"),
+        }
+    }
+
+    #[test]
+    fn test_try_from_incr() {
+        let value = RedisValue::Array(vec![
+            RedisValue::BulkString("INCR".to_string()),
+            RedisValue::BulkString("mykey".to_string()),
+        ]);
+        let cmd = RedisCommand::try_from(&value).unwrap();
+        match cmd {
+            RedisCommand::Incr(key) => {
+                assert_eq!(key, "mykey");
+            }
+            _ => panic!("Expected INCR command"),
         }
     }
 

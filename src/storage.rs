@@ -21,8 +21,8 @@ pub enum RedisError {
     InvalidStreamID,
 }
 
-type StreamItemId = (i64, i64); // (id, seq)
-type StreamItem = (StreamItemId, Vec<(String, String)>);
+pub type StreamItemId = (i64, i64); // (id, seq)
+pub type StreamItem = (StreamItemId, Vec<(String, String)>);
 pub enum BoundType {
     Inclusive,
     Exclusive,
@@ -249,6 +249,38 @@ impl Storage {
 
     pub fn stream_append_notified(&self) -> impl Future<Output = ()> + '_ {
         self.stream_append_notify.notified()
+    }
+
+    /// Returns entries for each stream key that has new entries after the given exclusive lower bound.
+    /// Only streams with at least one matching entry are included. Acquires a single read lock.
+    pub async fn read_streams_once(
+        &self,
+        streams: &[(String, (i64, Option<i64>))],
+    ) -> Vec<(String, Vec<StreamItem>)> {
+        let data = self.data.read().await;
+        streams
+            .iter()
+            .filter_map(|(stream_key, (start_id, start_seq))| {
+                let item = data.get(stream_key)?;
+                let ItemValue::Stream(stream) = &item.value else {
+                    return None;
+                };
+                let start: StreamRangeBound = (*start_id, *start_seq, BoundType::Exclusive);
+                let end: StreamRangeBound = (i64::MAX, Some(i64::MAX), BoundType::Inclusive);
+                let entries: Vec<StreamItem> = stream
+                    .iter()
+                    .filter(|((id, seq), _)| {
+                        Self::is_stream_item_in_range(*id, *seq, &start, &end)
+                    })
+                    .cloned()
+                    .collect();
+                if entries.is_empty() {
+                    None
+                } else {
+                    Some((stream_key.clone(), entries))
+                }
+            })
+            .collect()
     }
 
     pub async fn get_stream_last_id(&self, key: &str) -> Option<StreamItemId> {

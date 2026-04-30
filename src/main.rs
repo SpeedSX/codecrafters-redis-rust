@@ -15,7 +15,7 @@ use storage::Storage;
 
 mod parsing;
 
-use crate::storage::{BoundType, RedisError};
+use crate::storage::{BoundType, RedisError, StreamItem};
 
 static LOG_STDOUT: LazyLock<bool> = LazyLock::new(|| {
     std::env::var("REDIS_LOG_RECEIVED")
@@ -158,6 +158,19 @@ async fn resolve_xread_streams(
     resolved
 }
 
+fn map_xread_raw(raw: Vec<(String, Vec<StreamItem>)>) -> RedisValue {
+    RedisValue::Array(
+        raw.into_iter()
+            .map(|(key, entries)| {
+                RedisValue::Array(vec![
+                    RedisValue::BulkString(key),
+                    map_stream_entries(&mut entries.iter()),
+                ])
+            })
+            .collect(),
+    )
+}
+
 async fn read_xread_streams_blocking(
     storage: &Arc<Storage>,
     streams: &[(String, (i64, Option<i64>))],
@@ -167,8 +180,9 @@ async fn read_xread_streams_blocking(
     loop {
         // Subscribe before reading to avoid missing a concurrent append between the check and the wait.
         let notified = storage.stream_append_notified();
-        if let Some(response) = read_xread_streams_once(storage, streams).await? {
-            return Ok(response);
+        let raw = storage.read_streams_once(streams).await;
+        if !raw.is_empty() {
+            return Ok(map_xread_raw(raw));
         }
         let wait_dur = if let Some(deadline) = deadline {
             let now = Instant::now();
@@ -192,50 +206,6 @@ async fn read_xread_streams_blocking(
         } else {
             notified.await;
         }
-    }
-}
-
-async fn read_xread_streams_once(
-    storage: &Arc<Storage>,
-    streams: &[(String, (i64, Option<i64>))],
-) -> Result<Option<RedisValue>, RedisError> {
-    let mut result = Vec::with_capacity(streams.len());
-
-    for (stream_key, (start_id, start_seq)) in streams {
-        let Some(stream_entries) = storage
-            .with_stream_range(
-                stream_key,
-                &(*start_id, *start_seq, BoundType::Exclusive),
-                &(i64::MAX, Some(i64::MAX), BoundType::Inclusive),
-                |entries| {
-                    RedisValue::Array(vec![
-                        RedisValue::BulkString(stream_key.clone()),
-                        map_stream_entries(entries),
-                    ])
-                },
-            )
-            .await
-        else {
-            // A missing stream is equivalent to an empty stream for XREAD.
-            continue;
-        };
-
-        let has_entries = match &stream_entries {
-            RedisValue::Array(values) => values.get(1).is_some_and(|value| {
-                matches!(value, RedisValue::Array(entries) if !entries.is_empty())
-            }),
-            _ => false,
-        };
-
-        if has_entries {
-            result.push(stream_entries);
-        }
-    }
-
-    if result.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(RedisValue::Array(result)))
     }
 }
 
@@ -338,9 +308,8 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
 
         RedisCommand::XReadStreams(streams) => {
             let streams = resolve_xread_streams(storage, streams).await;
-            Ok(read_xread_streams_once(storage, &streams)
-                .await?
-                .unwrap_or(RedisValue::NullArray))
+            let raw = storage.read_streams_once(&streams).await;
+            Ok(if raw.is_empty() { RedisValue::NullArray } else { map_xread_raw(raw) })
         }
 
         RedisCommand::XReadBlockStreams(streams, timeout) => {

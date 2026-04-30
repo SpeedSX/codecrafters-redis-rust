@@ -270,13 +270,21 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
         RedisCommand::XReadStreams(streams) => {
             let streams = resolve_xread_streams(storage, streams).await;
             let raw = storage.read_streams_once(&streams).await;
-            Ok(if raw.is_empty() { RedisValue::NullArray } else { map_xread_raw(raw) })
+            Ok(if raw.is_empty() {
+                RedisValue::NullArray
+            } else {
+                map_xread_raw(raw)
+            })
         }
 
         RedisCommand::XReadBlockStreams(streams, timeout) => {
             let streams = resolve_xread_streams(storage, streams).await;
             let raw = storage.read_streams_blocking(&streams, timeout).await;
-            Ok(if raw.is_empty() { RedisValue::NullArray } else { map_xread_raw(raw) })
+            Ok(if raw.is_empty() {
+                RedisValue::NullArray
+            } else {
+                map_xread_raw(raw)
+            })
         }
     }
 }
@@ -906,8 +914,13 @@ mod tests {
         );
         get_response(xadd_cmd3, &storage).await.unwrap();
 
-        let xreadstreams_cmd =
-            RedisCommand::XReadStreams([("mystream".to_string(), CommandStreamReadBound::Id(1, Some(0)))].into());
+        let xreadstreams_cmd = RedisCommand::XReadStreams(
+            [(
+                "mystream".to_string(),
+                CommandStreamReadBound::Id(1, Some(0)),
+            )]
+            .into(),
+        );
         let response = get_response(xreadstreams_cmd, &storage).await.unwrap();
         assert_eq!(
             response,
@@ -953,8 +966,14 @@ mod tests {
 
         let xreadstreams_cmd = RedisCommand::XReadStreams(
             [
-                ("mystream1".to_string(), CommandStreamReadBound::Id(1, Some(0))),
-                ("mystream2".to_string(), CommandStreamReadBound::Id(2, Some(1))),
+                (
+                    "mystream1".to_string(),
+                    CommandStreamReadBound::Id(1, Some(0)),
+                ),
+                (
+                    "mystream2".to_string(),
+                    CommandStreamReadBound::Id(2, Some(1)),
+                ),
             ]
             .into(),
         );
@@ -997,8 +1016,13 @@ mod tests {
         );
         get_response(xadd_cmd1, &storage).await.unwrap();
 
-        let xreadstreams_cmd =
-            RedisCommand::XReadStreams([("mystream".to_string(), CommandStreamReadBound::Id(0, Some(0)))].into());
+        let xreadstreams_cmd = RedisCommand::XReadStreams(
+            [(
+                "mystream".to_string(),
+                CommandStreamReadBound::Id(0, Some(0)),
+            )]
+            .into(),
+        );
         let response = get_response(xreadstreams_cmd, &storage).await.unwrap();
         assert_eq!(
             response,

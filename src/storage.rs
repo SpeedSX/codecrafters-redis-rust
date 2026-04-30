@@ -244,7 +244,9 @@ impl Storage {
             }
         };
 
-        self.run_with_optional_timeout(timeout, future).await.flatten()
+        self.run_with_optional_timeout(timeout, future)
+            .await
+            .flatten()
     }
 
     /// Blocks until at least one of the streams has new entries past the exclusive lower bounds,
@@ -292,9 +294,7 @@ impl Storage {
                 let end: StreamRangeBound = (i64::MAX, Some(i64::MAX), BoundType::Inclusive);
                 let entries: Vec<StreamItem> = stream
                     .iter()
-                    .filter(|((id, seq), _)| {
-                        Self::is_stream_item_in_range(*id, *seq, &start, &end)
-                    })
+                    .filter(|((id, seq), _)| Self::is_stream_item_in_range(*id, *seq, &start, &end))
                     .cloned()
                     .collect();
                 if entries.is_empty() {

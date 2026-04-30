@@ -1,8 +1,7 @@
-use std::{sync::{Arc, LazyLock}, time::Duration};
+use std::sync::{Arc, LazyLock};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::Instant;
 
 mod redis_value;
 use redis_value::{RedisParseError, RedisValue};
@@ -171,44 +170,6 @@ fn map_xread_raw(raw: Vec<(String, Vec<StreamItem>)>) -> RedisValue {
     )
 }
 
-async fn read_xread_streams_blocking(
-    storage: &Arc<Storage>,
-    streams: &[(String, (i64, Option<i64>))],
-    timeout: u64,
-) -> Result<RedisValue, RedisError> {
-    let deadline = (timeout != 0).then(|| Instant::now() + Duration::from_millis(timeout));
-    loop {
-        // Subscribe before reading to avoid missing a concurrent append between the check and the wait.
-        let notified = storage.stream_append_notified();
-        let raw = storage.read_streams_once(streams).await;
-        if !raw.is_empty() {
-            return Ok(map_xread_raw(raw));
-        }
-        let wait_dur = if let Some(deadline) = deadline {
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(RedisValue::NullArray);
-            }
-            let remaining = deadline.duration_since(now).as_millis();
-            if remaining == 0 {
-                return Ok(RedisValue::NullArray);
-            }
-            Some(Duration::from_millis(
-                u64::try_from(remaining).unwrap_or(u64::MAX),
-            ))
-        } else {
-            None
-        };
-        if let Some(dur) = wait_dur {
-            if tokio::time::timeout(dur, notified).await.is_err() {
-                return Ok(RedisValue::NullArray);
-            }
-        } else {
-            notified.await;
-        }
-    }
-}
-
 async fn process_command(cmd: RedisCommand, stream: &mut TcpStream, storage: &Arc<Storage>) {
     match get_response(cmd, storage).await {
         Ok(response) => {
@@ -314,7 +275,8 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
 
         RedisCommand::XReadBlockStreams(streams, timeout) => {
             let streams = resolve_xread_streams(storage, streams).await;
-            read_xread_streams_blocking(storage, &streams, timeout).await
+            let raw = storage.read_streams_blocking(&streams, timeout).await;
+            Ok(if raw.is_empty() { RedisValue::NullArray } else { map_xread_raw(raw) })
         }
     }
 }

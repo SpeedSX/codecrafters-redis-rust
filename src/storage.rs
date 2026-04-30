@@ -247,6 +247,29 @@ impl Storage {
         self.run_with_optional_timeout(timeout, future).await.flatten()
     }
 
+    /// Blocks until at least one of the streams has new entries past the exclusive lower bounds,
+    /// then returns them. Returns an empty vec on timeout. timeout==0 means wait forever.
+    pub async fn read_streams_blocking(
+        &self,
+        streams: &[(String, (i64, Option<i64>))],
+        timeout: u64,
+    ) -> Vec<(String, Vec<StreamItem>)> {
+        let future = async {
+            loop {
+                // Subscribe before reading to avoid missing a concurrent append.
+                let notified = self.stream_append_notified();
+                let raw = self.read_streams_once(streams).await;
+                if !raw.is_empty() {
+                    return raw;
+                }
+                notified.await;
+            }
+        };
+        self.run_with_optional_timeout(timeout, future)
+            .await
+            .unwrap_or_default()
+    }
+
     pub fn stream_append_notified(&self) -> impl Future<Output = ()> + '_ {
         self.stream_append_notify.notified()
     }

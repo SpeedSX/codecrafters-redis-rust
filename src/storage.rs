@@ -247,10 +247,8 @@ impl Storage {
         self.run_with_optional_timeout(timeout, future).await.flatten()
     }
 
-    pub async fn wait_for_stream_append_with_timeout(&self, timeout: u64) -> bool {
-        self.run_with_optional_timeout(timeout, self.stream_append_notify.notified())
-            .await
-            .is_some()
+    pub fn stream_append_notified(&self) -> impl Future<Output = ()> + '_ {
+        self.stream_append_notify.notified()
     }
 
     pub async fn get_stream_last_id(&self, key: &str) -> Option<StreamItemId> {

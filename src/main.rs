@@ -158,6 +158,43 @@ async fn resolve_xread_streams(
     resolved
 }
 
+async fn read_xread_streams_blocking(
+    storage: &Arc<Storage>,
+    streams: &[(String, (i64, Option<i64>))],
+    timeout: u64,
+) -> Result<RedisValue, RedisError> {
+    let deadline = (timeout != 0).then(|| Instant::now() + Duration::from_millis(timeout));
+    loop {
+        // Subscribe before reading to avoid missing a concurrent append between the check and the wait.
+        let notified = storage.stream_append_notified();
+        if let Some(response) = read_xread_streams_once(storage, streams).await? {
+            return Ok(response);
+        }
+        let wait_dur = if let Some(deadline) = deadline {
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(RedisValue::NullArray);
+            }
+            let remaining = deadline.duration_since(now).as_millis();
+            if remaining == 0 {
+                return Ok(RedisValue::NullArray);
+            }
+            Some(Duration::from_millis(
+                u64::try_from(remaining).unwrap_or(u64::MAX),
+            ))
+        } else {
+            None
+        };
+        if let Some(dur) = wait_dur {
+            if tokio::time::timeout(dur, notified).await.is_err() {
+                return Ok(RedisValue::NullArray);
+            }
+        } else {
+            notified.await;
+        }
+    }
+}
+
 async fn read_xread_streams_once(
     storage: &Arc<Storage>,
     streams: &[(String, (i64, Option<i64>))],
@@ -308,34 +345,7 @@ async fn get_response(cmd: RedisCommand, storage: &Arc<Storage>) -> Result<Redis
 
         RedisCommand::XReadBlockStreams(streams, timeout) => {
             let streams = resolve_xread_streams(storage, streams).await;
-            let deadline = (timeout != 0).then(|| Instant::now() + Duration::from_millis(timeout));
-
-            loop {
-                if let Some(response) = read_xread_streams_once(storage, &streams).await? {
-                    break Ok(response);
-                }
-
-                let wait_timeout = if let Some(deadline) = deadline {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        break Ok(RedisValue::NullArray);
-                    }
-
-                    let remaining = deadline.duration_since(now).as_millis();
-                    if remaining == 0 {
-                        break Ok(RedisValue::NullArray);
-                    }
-
-                    u64::try_from(remaining).unwrap_or(u64::MAX)
-                } else {
-                    0
-                };
-
-                let notified = storage.wait_for_stream_append_with_timeout(wait_timeout).await;
-                if !notified {
-                    break Ok(RedisValue::NullArray);
-                }
-            }
+            read_xread_streams_blocking(storage, &streams, timeout).await
         }
     }
 }
